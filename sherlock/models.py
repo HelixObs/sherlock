@@ -56,15 +56,26 @@ class ReplyRequest(BaseModel):
     content: str
 
 
+class HypothesisData(BaseModel):
+    classification: str = "unknown"
+    confidence: str = "low"
+    summary: str = ""
+    evidence: list[str] = Field(default_factory=list)
+    recommendation: str = ""
+    gaps: str = ""
+
+
 class MemoryEntry(BaseModel):
     id: str = ""
     instrument_id: str
+    entity_id: str = ""
     error_type: str = ""
     stage: str = ""
-    content: str
-    confidence: str = "low"   # low | medium | high
-    learned_by: str = ""
-    learned_from: str = ""    # entity_id of triggering incident
+    classification: str = "unknown"
+    confidence: str = "low"
+    summary: str = ""
+    recommendation: str = ""
+    created_at: str = ""
 
 
 class DiagnoseChunk(BaseModel):

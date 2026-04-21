@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sherlock.models import InstrumentContext
+from sherlock.models import InstrumentContext, MemoryEntry
 
 _LADDER = """
 ## Investigation ladder
@@ -76,7 +76,8 @@ _FORMAT = """
 
 
 def build(entity_id: str, instrument_ctx: InstrumentContext | None,
-          agent_docs: list[tuple[str, str]]) -> str:
+          agent_docs: list[tuple[str, str]],
+          memory: list[MemoryEntry] | None = None) -> str:
     parts = [
         "You are Sherlock, the HelixObs AI troubleshooting agent.",
         f"You are investigating entity `{entity_id}` which has a recorded error.",
@@ -88,6 +89,9 @@ def build(entity_id: str, instrument_ctx: InstrumentContext | None,
         _FORMAT,
     ]
 
+    if memory:
+        parts += ["", "## Prior investigations (Tier 2 memory)", _format_memory(memory)]
+
     if instrument_ctx:
         parts += ["", "## Instrument configuration", _format_ctx(instrument_ctx)]
 
@@ -97,6 +101,23 @@ def build(entity_id: str, instrument_ctx: InstrumentContext | None,
             parts += [f"\n### {url}\n", content]
 
     return "\n".join(parts)
+
+
+def _format_memory(entries: list[MemoryEntry]) -> str:
+    lines = [
+        "These are outcomes from previous investigations on this instrument.",
+        "Use them as priors — if you see the same error pattern, you can reach",
+        "a conclusion faster. Do NOT skip Level 0 tool calls, but do reference",
+        "prior findings when they match.",
+        "",
+    ]
+    for e in entries:
+        lines.append(
+            f"- [{e.created_at[:10]}] entity={e.entity_id} "
+            f"error={e.error_type or '?'} stage={e.stage or '?'} "
+            f"→ {e.classification} ({e.confidence} confidence): {e.summary[:120]}"
+        )
+    return "\n".join(lines)
 
 
 def _format_ctx(ctx: InstrumentContext) -> str:

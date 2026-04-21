@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 
-from sherlock import agent, context, sessions
+from sherlock import agent, context, memory as mem, sessions
 from sherlock.models import DiagnoseChunk, DiagnoseRequest, MemoryEntry, ReplyRequest
 
 logging.basicConfig(level=logging.INFO)
@@ -68,20 +68,14 @@ async def reply(session_id: str, body: ReplyRequest) -> StreamingResponse:
 
 @app.get("/memory/{instrument_id}")
 async def get_memory(instrument_id: str) -> list[MemoryEntry]:
-    """Return all Tier 2 memory entries for an instrument. (Stub — Task 8)"""
-    return []
-
-
-@app.post("/memory/{instrument_id}", status_code=201)
-async def write_memory(instrument_id: str, entry: MemoryEntry) -> MemoryEntry:
-    """Save a new Tier 2 memory entry. (Stub — Task 8)"""
-    entry.instrument_id = instrument_id
-    return entry
+    """Return all Tier 2 memory entries for an instrument."""
+    return await mem.get_all(instrument_id)
 
 
 @app.delete("/memory/{memory_id}", status_code=204)
 async def delete_memory(memory_id: str) -> None:
-    """Delete a Tier 2 memory entry by id. (Stub — Task 8)"""
+    """Delete a Tier 2 memory entry by id."""
+    await mem.delete(memory_id)
 
 
 # ── Streaming helpers ─────────────────────────────────────────────────────────

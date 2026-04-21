@@ -17,8 +17,9 @@ from collections.abc import AsyncGenerator
 
 import anthropic
 
+from sherlock import memory as mem
 from sherlock import prompt
-from sherlock.models import DiagnoseChunk, InstrumentContext
+from sherlock.models import DiagnoseChunk, HypothesisData, InstrumentContext
 from sherlock.sessions import Session  # noqa: F401 — used by _done_chunk type hint
 from sherlock.tools import DEFINITIONS, dispatch
 
@@ -64,7 +65,8 @@ async def run(
       type="error"        — unrecoverable error
       type="done"         — investigation complete
     """
-    system = prompt.build(session.entity_id, instrument_ctx, agent_docs)
+    prior_memory = await mem.load(session.instrument_id) if session.instrument_id else []
+    system = prompt.build(session.entity_id, instrument_ctx, agent_docs, prior_memory)
 
     # Seed the conversation if this is a fresh session.
     if not session.history:
@@ -133,6 +135,13 @@ async def run(
                     text=tu.input.get("summary", ""),
                     data=tu.input,
                 )
+                # Persist outcome to Tier 2 memory.
+                if session.instrument_id:
+                    try:
+                        hypothesis = HypothesisData(**tu.input)
+                        await mem.save(session.instrument_id, session.entity_id, hypothesis)
+                    except Exception:
+                        log.exception("failed to save memory")
                 yield _done_chunk(session)
                 return
 
