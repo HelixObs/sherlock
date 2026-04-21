@@ -16,12 +16,12 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 _HEADERS = {
     "Accept": "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
-    **({"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}),
 }
 
 # ── Tool implementations ──────────────────────────────────────────────────────
 
-async def fetch_github_file(url: str, center_line: int, context_lines: int = 30) -> dict:
+async def fetch_github_file(url: str, center_line: int, context_lines: int = 30,
+                            _token: str = "") -> dict:
     """Fetch source code around a specific line from a GitHub file URL.
 
     Accepts either a GitHub blob URL
@@ -33,7 +33,11 @@ async def fetch_github_file(url: str, center_line: int, context_lines: int = 30)
     if raw_url is None:
         return {"error": f"cannot parse GitHub URL: {url!r}"}
 
-    async with httpx.AsyncClient(timeout=10, headers=_HEADERS) as client:
+    # Operator token takes precedence over the service-level env token.
+    token = _token or GITHUB_TOKEN
+    headers = {**_HEADERS, **({"Authorization": f"Bearer {token}"} if token else {})}
+
+    async with httpx.AsyncClient(timeout=10, headers=headers) as client:
         r = await client.get(raw_url)
         if r.status_code != 200:
             return {"error": f"HTTP {r.status_code} fetching {raw_url}"}
@@ -57,7 +61,7 @@ async def fetch_github_file(url: str, center_line: int, context_lines: int = 30)
     }
 
 
-async def search_github_callers(repo: str, function_name: str) -> dict:
+async def search_github_callers(repo: str, function_name: str, _token: str = "") -> dict:
     """Search a GitHub repo for callers of a function using the code search API.
 
     repo should be in 'owner/repo' or full URL form.
@@ -67,8 +71,11 @@ async def search_github_callers(repo: str, function_name: str) -> dict:
     if slug is None:
         return {"error": f"cannot parse repo: {repo!r}"}
 
+    token = _token or GITHUB_TOKEN
+    headers = {**_HEADERS, **({"Authorization": f"Bearer {token}"} if token else {})}
+
     query = f"{function_name} repo:{slug}"
-    async with httpx.AsyncClient(timeout=15, headers=_HEADERS) as client:
+    async with httpx.AsyncClient(timeout=15, headers=headers) as client:
         r = await client.get(
             "https://api.github.com/search/code",
             params={"q": query, "per_page": 10},

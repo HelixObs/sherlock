@@ -36,7 +36,7 @@ async def diagnose(entity_id: str, body: DiagnoseRequest) -> StreamingResponse:
     """
     instrument_ctx = context.load(body.instrument_id) if body.instrument_id else None
     agent_docs = await context.fetch_agent_docs(instrument_ctx) if instrument_ctx else []
-    session = sessions.create(entity_id, body.instrument_id)
+    session = sessions.create(entity_id, body.instrument_id, body.github_token)
 
     return StreamingResponse(
         _stream(session, instrument_ctx, agent_docs, session_id_in_first_chunk=session.id),

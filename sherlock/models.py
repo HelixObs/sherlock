@@ -49,6 +49,7 @@ class InstrumentContext(BaseModel):
 
 class DiagnoseRequest(BaseModel):
     instrument_id: str = ""
+    github_token: str = ""   # operator's PAT for private repo source fetching; never logged
 
 
 class ReplyRequest(BaseModel):

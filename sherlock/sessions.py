@@ -22,6 +22,7 @@ class Session:
     turn_count: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    github_token: str = ""   # operator-supplied PAT; lives only in memory, never persisted
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -29,8 +30,9 @@ class Session:
 _store: dict[str, Session] = {}
 
 
-def create(entity_id: str, instrument_id: str) -> Session:
-    s = Session(id=str(uuid.uuid4()), entity_id=entity_id, instrument_id=instrument_id)
+def create(entity_id: str, instrument_id: str, github_token: str = "") -> Session:
+    s = Session(id=str(uuid.uuid4()), entity_id=entity_id,
+                instrument_id=instrument_id, github_token=github_token)
     _store[s.id] = s
     return s
 

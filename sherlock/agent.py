@@ -160,7 +160,10 @@ async def run(
                 text=f"\n→ **{tu.name}**({args_summary})\n",
             )
 
-            result = await dispatch(tu.name, tu.input)
+            args = dict(tu.input)
+            if tu.name in ("fetch_github_file", "search_github_callers") and session.github_token:
+                args["_token"] = session.github_token
+            result = await dispatch(tu.name, args)
             log.info("tool %s → %d chars", tu.name, len(json.dumps(result)))
 
             tool_results.append({
