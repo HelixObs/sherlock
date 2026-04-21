@@ -102,6 +102,51 @@ async def save(instrument_id: str, entity_id: str, hypothesis: HypothesisData) -
     return row["id"] if row else None
 
 
+async def load_for_entity(entity_id: str) -> MemoryEntry | None:
+    """Return the most recent investigation for a specific entity, or None."""
+    if not DB_URL:
+        return None
+    try:
+        import asyncpg
+    except ImportError:
+        return None
+    try:
+        conn = await asyncpg.connect(DB_URL)
+        try:
+            row = await conn.fetchrow(
+                """
+                SELECT id, instrument_id, entity_id, error_type, stage,
+                       classification, confidence, summary, recommendation,
+                       created_at
+                FROM instrument_memory
+                WHERE entity_id = $1
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                entity_id,
+            )
+        finally:
+            await conn.close()
+    except Exception:
+        log.exception("memory.load_for_entity failed")
+        return None
+
+    if not row:
+        return None
+    return MemoryEntry(
+        id=row["id"],
+        instrument_id=row["instrument_id"],
+        entity_id=row["entity_id"],
+        error_type=row["error_type"],
+        stage=row["stage"],
+        classification=row["classification"],
+        confidence=row["confidence"],
+        summary=row["summary"],
+        recommendation=row["recommendation"],
+        created_at=row["created_at"].isoformat(),
+    )
+
+
 async def get_all(instrument_id: str) -> list[MemoryEntry]:
     """Return all memory entries for an instrument (for the /memory API)."""
     return await load(instrument_id)
