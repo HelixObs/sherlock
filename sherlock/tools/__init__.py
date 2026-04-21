@@ -12,7 +12,7 @@ Usage:
 
 from __future__ import annotations
 
-from sherlock.tools import gateway, github, loki, prometheus
+from sherlock.tools import gateway, github, loki, output, prometheus
 
 # All Claude tool schema definitions — pass directly to anthropic.messages.create()
 DEFINITIONS: list[dict] = [
@@ -20,9 +20,10 @@ DEFINITIONS: list[dict] = [
     *loki.DEFINITIONS,
     *gateway.DEFINITIONS,
     *prometheus.DEFINITIONS,
+    *output.DEFINITIONS,
 ]
 
-# name → async callable
+# name → async callable (output tools have no handlers — loop interprets them)
 _HANDLERS: dict = {
     **github.HANDLERS,
     **loki.HANDLERS,

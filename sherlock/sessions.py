@@ -19,6 +19,7 @@ class Session:
     entity_id: str
     instrument_id: str
     history: list[dict] = field(default_factory=list)
+    turn_count: int = 0
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 

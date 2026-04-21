@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 
-from sherlock import context, sessions
+from sherlock import agent, context, sessions
 from sherlock.models import DiagnoseChunk, DiagnoseRequest, MemoryEntry, ReplyRequest
 
 logging.basicConfig(level=logging.INFO)
@@ -35,10 +35,11 @@ async def diagnose(entity_id: str, body: DiagnoseRequest) -> StreamingResponse:
     replies via POST /diagnose/{session_id}/reply.
     """
     instrument_ctx = context.load(body.instrument_id) if body.instrument_id else None
+    agent_docs = await context.fetch_agent_docs(instrument_ctx) if instrument_ctx else []
     session = sessions.create(entity_id, body.instrument_id)
 
     return StreamingResponse(
-        _run_investigation(session.id, entity_id, instrument_ctx),
+        _stream(session, instrument_ctx, agent_docs, session_id_in_first_chunk=session.id),
         media_type="application/x-ndjson",
     )
 
@@ -50,11 +51,15 @@ async def reply(session_id: str, body: ReplyRequest) -> StreamingResponse:
     if session is None:
         raise HTTPException(status_code=404, detail="session not found or expired")
 
-    session.history.append({"role": "user", "content": body.content})
+    # Replace the [waiting for operator reply] placeholder with the real answer.
+    _patch_waiting_placeholder(session, body.content)
     sessions.touch(session_id)
 
+    instrument_ctx = context.load(session.instrument_id) if session.instrument_id else None
+    agent_docs = await context.fetch_agent_docs(instrument_ctx) if instrument_ctx else []
+
     return StreamingResponse(
-        _continue_investigation(session),
+        _stream(session, instrument_ctx, agent_docs),
         media_type="application/x-ndjson",
     )
 
@@ -79,50 +84,49 @@ async def delete_memory(memory_id: str) -> None:
     """Delete a Tier 2 memory entry by id. (Stub — Task 8)"""
 
 
-# ── Investigation generator (stub — Task 5 wires real tools) ─────────────────
+# ── Streaming helpers ─────────────────────────────────────────────────────────
 
-async def _run_investigation(
-    session_id: str,
-    entity_id: str,
+def _encode(c: DiagnoseChunk) -> bytes:
+    return (json.dumps(c.model_dump()) + "\n").encode()
+
+
+async def _stream(
+    session: sessions.Session,
     instrument_ctx,
+    agent_docs: list,
+    session_id_in_first_chunk: str = "",
 ) -> AsyncGenerator[bytes, None]:
-    def chunk(c: DiagnoseChunk) -> bytes:
-        return (json.dumps(c.model_dump()) + "\n").encode()
-
-    yield chunk(DiagnoseChunk(
-        type="step",
-        text=f"Starting investigation for entity `{entity_id}`.",
-        data={"session_id": session_id},
-    ))
-
-    if instrument_ctx:
-        yield chunk(DiagnoseChunk(
+    if session_id_in_first_chunk:
+        yield _encode(DiagnoseChunk(
             type="step",
-            text=f"Loaded instrument context for **{instrument_ctx.instrument_id}**: "
-                 f"{instrument_ctx.description}",
-        ))
-    else:
-        yield chunk(DiagnoseChunk(
-            type="step",
-            text="No instrument context found — proceeding without Tier 1 config.",
+            text=f"Starting investigation for `{session.entity_id}`.",
+            data={"session_id": session_id_in_first_chunk},
         ))
 
-    # Placeholder until Task 5 (investigation tools) is implemented.
-    yield chunk(DiagnoseChunk(
-        type="hypothesis",
-        text="Investigation tools not yet wired. This is a skeleton response.",
-        data={"classification": "unknown", "confidence": "none"},
-    ))
+    try:
+        async for chunk in agent.run(session, instrument_ctx, agent_docs):
+            yield _encode(chunk)
+    except Exception as exc:
+        log.exception("agent error")
+        yield _encode(DiagnoseChunk(type="error", text=str(exc)))
+        yield _encode(DiagnoseChunk(type="done", text=""))
 
-    yield chunk(DiagnoseChunk(type="done", text=""))
 
-
-async def _continue_investigation(session: sessions.Session) -> AsyncGenerator[bytes, None]:
-    def chunk(c: DiagnoseChunk) -> bytes:
-        return (json.dumps(c.model_dump()) + "\n").encode()
-
-    yield chunk(DiagnoseChunk(
-        type="step",
-        text="Follow-up received. Investigation continuation not yet wired (Task 5/6).",
-    ))
-    yield chunk(DiagnoseChunk(type="done", text=""))
+def _patch_waiting_placeholder(session: sessions.Session, operator_reply: str) -> None:
+    """Replace the [waiting for operator reply] tool result with the real answer."""
+    for msg in reversed(session.history):
+        if msg["role"] != "user":
+            continue
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if (
+                isinstance(item, dict)
+                and item.get("type") == "tool_result"
+                and item.get("content") == "[waiting for operator reply]"
+            ):
+                item["content"] = operator_reply
+                return
+    # If no placeholder found, append as a plain user message.
+    session.history.append({"role": "user", "content": operator_reply})
