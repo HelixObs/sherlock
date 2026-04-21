@@ -101,6 +101,36 @@ def test_known_failures_parsed(tmp_path, monkeypatch):
     assert "GPU" in stage.known_failures[0].hint
 
 
+def test_agent_docs_parsed(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHERLOCK_INSTRUMENTS_DIR", str(tmp_path))
+    _write_config(tmp_path, "mytel-context.yml", """
+        instrument_id: MYTEL
+        agent_docs:
+          - repo: https://github.com/HelixObs/mock-telescope
+          - repo: https://github.com/HelixObs/gateway
+            paths: [AGENT.md, internal/db/AGENT.md]
+    """)
+    ctx = context.load("MYTEL")
+    assert ctx is not None
+    assert len(ctx.agent_docs) == 2
+    assert ctx.agent_docs[0].repo == "https://github.com/HelixObs/mock-telescope"
+    assert ctx.agent_docs[0].paths == ["AGENT.md"]   # default
+    assert ctx.agent_docs[1].paths == ["AGENT.md", "internal/db/AGENT.md"]
+
+
+def test_raw_url_conversion():
+    from sherlock.context import _raw_url
+    url = _raw_url("https://github.com/HelixObs/gateway", "AGENT.md")
+    assert url == "https://raw.githubusercontent.com/HelixObs/gateway/main/AGENT.md"
+
+
+def test_raw_url_strips_git_suffix():
+    from sherlock.context import _raw_url
+    url = _raw_url("https://github.com/HelixObs/gateway.git", "internal/db/AGENT.md")
+    assert "raw.githubusercontent.com" in url
+    assert "gateway.git" not in url   # .git suffix stripped from repo slug
+
+
 def test_prometheus_extra_fields(tmp_path, monkeypatch):
     monkeypatch.setenv("SHERLOCK_INSTRUMENTS_DIR", str(tmp_path))
     _write_config(tmp_path, "mytel-context.yml", """

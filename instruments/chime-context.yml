@@ -41,3 +41,12 @@ pipeline:
 contacts:
   oncall:     "@chime-ops"
   escalation: "@chime-science-lead"
+
+# AGENT.md files Sherlock fetches from GitHub for architectural context.
+# Each entry is a repo; paths defaults to [AGENT.md] if omitted.
+agent_docs:
+  - repo: https://github.com/HelixObs/mock-telescope
+  - repo: https://github.com/HelixObs/client-python
+    paths: [AGENT.md, helixobs/AGENT.md]
+  - repo: https://github.com/HelixObs/gateway
+

@@ -30,12 +30,19 @@ class Contacts(BaseModel):
     escalation: str = ""
 
 
+class AgentDoc(BaseModel):
+    """A GitHub repo from which Sherlock fetches AGENT.md files for context."""
+    repo: str                        # e.g. https://github.com/HelixObs/mock-telescope
+    paths: list[str] = Field(default_factory=lambda: ["AGENT.md"])  # paths to fetch
+
+
 class InstrumentContext(BaseModel):
     instrument_id: str
     description: str = ""
     prometheus: PrometheusConfig = Field(default_factory=PrometheusConfig)
     pipeline: list[PipelineStage] = Field(default_factory=list)
     contacts: Contacts = Field(default_factory=Contacts)
+    agent_docs: list[AgentDoc] = Field(default_factory=list)
 
 
 # ── API shapes ────────────────────────────────────────────────────────────────
