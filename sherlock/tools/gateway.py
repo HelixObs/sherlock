@@ -83,7 +83,7 @@ async def query_entity_ancestors(entity_id: str, max_depth: int = 10) -> dict:
 
 async def query_similar_errors(
     instrument_id: str,
-    error_type: str,
+    error_type: str = "",
     window_minutes: int = 60,
 ) -> dict:
     """Find other entities with helix.error events for the same instrument
