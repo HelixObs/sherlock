@@ -130,6 +130,12 @@ async def run(
         for tu in tool_uses:
             # Loop-control tools — interpret directly, don't dispatch.
             if tu.name == "submit_hypothesis":
+                # Append tool_result so history stays valid for follow-up replies.
+                session.history.append({"role": "user", "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": tu.id,
+                    "content": "Hypothesis submitted.",
+                }]})
                 yield DiagnoseChunk(
                     type="hypothesis",
                     text=tu.input.get("summary", ""),
