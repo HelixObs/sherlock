@@ -19,14 +19,28 @@ import anthropic
 
 from sherlock import prompt
 from sherlock.models import DiagnoseChunk, InstrumentContext
-from sherlock.sessions import Session
+from sherlock.sessions import Session  # noqa: F401 — used by _done_chunk type hint
 from sherlock.tools import DEFINITIONS, dispatch
 
 log = logging.getLogger(__name__)
 
-MODEL          = os.environ.get("SHERLOCK_MODEL", "claude-sonnet-4-6")
-MAX_TOKENS     = 4096
-MAX_TURNS      = 10
+MODEL      = os.environ.get("SHERLOCK_MODEL", "claude-sonnet-4-6")
+MAX_TOKENS = 4096
+MAX_TURNS  = 10
+
+# Pricing per million tokens (USD). Update if model changes.
+_PRICING: dict[str, tuple[float, float]] = {
+    # model-id: (input $/1M, output $/1M)
+    "claude-sonnet-4-6":          (3.00, 15.00),
+    "claude-opus-4-7":            (15.00, 75.00),
+    "claude-haiku-4-5-20251001":  (0.80,  4.00),
+}
+_DEFAULT_PRICING = (3.00, 15.00)
+
+
+def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    input_rate, output_rate = _PRICING.get(model, _DEFAULT_PRICING)
+    return (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
 
 
 def _client() -> anthropic.AsyncAnthropic:
@@ -89,6 +103,11 @@ async def run(
 
             final = await stream.get_final_message()
 
+        # Accumulate token usage for cost estimate.
+        if final.usage:
+            session.input_tokens  += final.usage.input_tokens
+            session.output_tokens += final.usage.output_tokens
+
         # Collect tool_use blocks from the final message.
         for block in final.content:
             if block.type == "tool_use":
@@ -100,7 +119,7 @@ async def run(
             "content": final.content,
         })
 
-        # ── No tool calls → model finished speaking, no structured output ────
+            # ── No tool calls → model finished speaking without submit_hypothesis ──
         if not tool_uses:
             break
 
@@ -114,7 +133,7 @@ async def run(
                     text=tu.input.get("summary", ""),
                     data=tu.input,
                 )
-                yield DiagnoseChunk(type="done", text="")
+                yield _done_chunk(session)
                 return
 
             if tu.name == "ask_operator":
@@ -131,6 +150,7 @@ async def run(
                     "content": "[waiting for operator reply]",
                 })
                 session.history.append({"role": "user", "content": tool_results})
+                # No done chunk here — session continues via /reply.
                 return
 
             # Real investigation tool — announce and dispatch.
@@ -158,4 +178,18 @@ async def run(
             text="\n\n*Turn limit reached. Summarising based on evidence gathered so far.*\n",
         )
 
-    yield DiagnoseChunk(type="done", text="")
+    yield _done_chunk(session)
+
+
+def _done_chunk(session: Session) -> DiagnoseChunk:
+    cost = _estimate_cost(MODEL, session.input_tokens, session.output_tokens)
+    return DiagnoseChunk(
+        type="done",
+        text="",
+        data={
+            "input_tokens":  session.input_tokens,
+            "output_tokens": session.output_tokens,
+            "cost_usd":      round(cost, 6),
+            "model":         MODEL,
+        },
+    )
