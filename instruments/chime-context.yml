@@ -1,0 +1,43 @@
+instrument_id: CHIME
+description: "Canadian Hydrogen Intensity Mapping Experiment — FRB detection pipeline"
+
+prometheus:
+  node_memory:  node_memory_MemAvailable_bytes
+  node_cpu:     rate(node_cpu_seconds_total{mode!="idle"}[5m])
+  host_label:   rack_id
+
+pipeline:
+  stages:
+    - name: x_engine_correlator
+      description: "Processes 8-second FPGA data blocks from 1024 inputs"
+      known_failures:
+        - type: BUFFER_OVERFLOW
+          hint: "Check upstream FPGA timing and ring buffer utilization. Usually caused by packet loss."
+        - type: TIMESTAMP_MISMATCH
+          hint: "GPS timing issue. Check GPS lock status on the correlator nodes."
+
+    - name: frb_classifier
+      description: "Scores beam candidates for FRB probability using ML model"
+      known_failures:
+        - type: CLASSIFIER_TIMEOUT
+          hint: "Usually GPU memory pressure on gpu-rack-3. Check node_memory_MemAvailable_bytes first."
+        - type: MODEL_LOAD_FAILURE
+          hint: "Model weights missing or corrupt. Check /data/models/ on the classifier nodes."
+
+    - name: clustering
+      description: "Clusters beam candidates into FRB events"
+      known_failures:
+        - type: INSUFFICIENT_CANDIDATES
+          hint: "Fewer than 2 candidates — may be a genuine non-detection or RFI flagging too aggressive."
+
+    - name: hdf5_archiver
+      description: "Writes FRB event data to HDF5 files on the archive cluster"
+      known_failures:
+        - type: DISK_FULL
+          hint: "Check /data/archive disk usage. Retention policy may need adjustment."
+        - type: WRITE_TIMEOUT
+          hint: "Archive NFS mount may be unresponsive. Check archive cluster health."
+
+contacts:
+  oncall:     "@chime-ops"
+  escalation: "@chime-science-lead"
