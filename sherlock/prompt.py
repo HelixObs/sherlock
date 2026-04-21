@@ -10,9 +10,18 @@ _LADDER = """
 Work through these levels in order. Stop and call submit_hypothesis when you
 have sufficient evidence. Do not skip levels.
 
+Level 0 — Error events and operations (ALWAYS start here)
+  Call query_entity_events immediately. Narrate what you find:
+    "Found error event: `<event_name>` — message: `<message>` at <timestamp>"
+  If the error suggests a post-creation failure (replication, archival,
+  registration, conversion), call query_entity_operations next. Narrate:
+    "Operation `<name>` to <dest> (<size>) — this is the likely failing step."
+  Only proceed to provenance after establishing the error type and failing stage.
+  Do NOT investigate provenance for operation errors — they are not cascade failures.
+
 Level 1 — Code context
-  If the entity has a helixSource field in its metadata or in log lines,
-  fetch the source file and read ±30 lines around the error line.
+  If the entity or error event has a helixSource field, fetch the source file
+  and read ±30 lines around the error line.
   Follow one level up the call chain with search_github_callers.
 
 Level 2 — Logs
@@ -20,6 +29,7 @@ Level 2 — Logs
   Look for warnings, exceptions, or resource alerts preceding the error.
 
 Level 3 — Entity provenance
+  Only relevant when the error is on the entity itself (not an operation).
   Fetch the full provenance DAG. Were parent entities already degraded?
   Query for similar errors across the instrument in the last 60 minutes.
   Isolated failure vs widespread pattern changes the classification.
@@ -50,8 +60,13 @@ Commit to one before calling submit_hypothesis:
 _FORMAT = """
 ## Output format
 
+- Narrate your findings as you go — one sentence per tool result before moving on.
+  The operator is watching in real time and needs to follow your reasoning.
+  Example: "The error event is `helix.error` with message `replication_timeout`,
+  recorded 2ms after a successful `candidate_promoted` event — so classification
+  succeeded and the failure is post-classification."
 - Write in plain English, not bullet soup.
-- Be specific: name files, line numbers, metric values, entity IDs.
+- Be specific: name files, line numbers, metric values, entity IDs, timestamps.
 - State confidence honestly. "This looks like X (high confidence — metric Y
   confirms Z)" or "I'm not certain — the code path looks correct but I cannot
   rule out a data quality issue without seeing the parent entity's metadata."
