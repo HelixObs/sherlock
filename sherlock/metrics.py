@@ -27,12 +27,13 @@ METRICS_PORT = int(os.environ.get("SHERLOCK_METRICS_PORT", "9102"))
 queries_total = Counter(
     "sherlock_queries_total",
     "Total Sherlock investigations by outcome.",
-    ["status"],  # success | failed
+    ["query_type", "status"],  # status: success | failed
 )
 
 query_duration_seconds = Histogram(
     "sherlock_query_duration_seconds",
     "End-to-end investigation duration in seconds.",
+    ["query_type"],
     buckets=[1, 2, 5, 10, 20, 30, 60, 120, 300],
 )
 
@@ -48,10 +49,23 @@ tokens_output_total = Counter(
     ["model"],
 )
 
+tokens_total = Counter(
+    "sherlock_tokens_total",
+    "Combined input + output tokens consumed.",
+    ["model"],
+)
+
 cost_usd_total = Counter(
     "sherlock_cost_usd_total",
     "Cumulative investigation cost in USD.",
     ["model"],
+)
+
+cost_per_query_usd = Histogram(
+    "sherlock_cost_per_query_usd",
+    "Cost distribution per investigation in USD.",
+    ["model"],
+    buckets=[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0],
 )
 
 tool_calls_total = Counter(
@@ -90,14 +104,17 @@ async def record_usage(
     duration_ms: int,
     tool_call_count: int,
     successful: bool,
+    query_type: str = "diagnosis",
 ) -> None:
     """Write one row to sherlock_usage and update Prometheus counters."""
     status = "success" if successful else "failed"
-    queries_total.labels(status=status).inc()
-    query_duration_seconds.observe(duration_ms / 1000)
+    queries_total.labels(query_type=query_type, status=status).inc()
+    query_duration_seconds.labels(query_type=query_type).observe(duration_ms / 1000)
     tokens_input_total.labels(model=model).inc(tokens_input)
     tokens_output_total.labels(model=model).inc(tokens_output)
+    tokens_total.labels(model=model).inc(tokens_input + tokens_output)
     cost_usd_total.labels(model=model).inc(cost_usd)
+    cost_per_query_usd.labels(model=model).observe(cost_usd)
 
     if not DB_URL:
         return
