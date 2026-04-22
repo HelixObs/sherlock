@@ -7,9 +7,12 @@ filtered at query time using the JSON pipeline operator.
 
 from __future__ import annotations
 
+import json
 import os
 
 import httpx
+
+from .grafana import loki_url
 
 LOKI_URL = os.environ.get("LOKI_URL", "http://loki:3100")
 
@@ -18,16 +21,23 @@ _MAX_LINES = 50
 
 # ── Tool implementation ───────────────────────────────────────────────────────
 
+_MIN_WINDOW_NS = 5 * 60 * 1_000_000_000   # 5 minutes in nanoseconds
+
+
 async def query_loki(entity_id: str, start_ts: int, end_ts: int) -> dict:
     """Query Loki for log lines associated with entity_id in [start_ts, end_ts].
 
     Timestamps are Unix nanoseconds (matching the OTel/HelixObs convention).
     Returns up to _MAX_LINES log lines ordered oldest-first.
     """
-    # Loki query: stream selector + JSON filter on helix_entity_id.
-    # {job=~".+"} selects all streams; the json filter narrows to the entity.
-    logql = f'{{job=~".+"}} | json | helix_entity_id=`{entity_id}`'
+    # Enforce a minimum window so the Grafana link is always useful even if
+    # the caller passes nearly-identical timestamps.
+    if end_ts - start_ts < _MIN_WINDOW_NS:
+        mid = (start_ts + end_ts) // 2
+        start_ts = mid - _MIN_WINDOW_NS
+        end_ts   = mid + _MIN_WINDOW_NS
 
+    logql = f'{{helix_instrument_id=~".+"}} | json | helix_entity_id=`{entity_id}`'
     params = {
         "query": logql,
         "start": str(start_ts),
@@ -47,16 +57,36 @@ async def query_loki(entity_id: str, start_ts: int, end_ts: int) -> dict:
     lines = []
     for stream in results:
         for ts, msg in stream.get("values", []):
-            lines.append({"ts": ts, "msg": msg})
+            entry: dict = {"ts": ts, "msg": msg}
+            # Parse JSON log lines to surface structured fields directly.
+            try:
+                parsed = json.loads(msg)
+                if parsed.get("level"):
+                    entry["level"] = parsed["level"]
+                if parsed.get("msg"):
+                    entry["msg"] = parsed["msg"]
+                # Extract src (GitHub permalink) — present on every log line
+                # emitted by the mock-telescope and real pipeline code.
+                if parsed.get("src"):
+                    entry["src"] = parsed["src"]
+            except (json.JSONDecodeError, AttributeError):
+                pass
+            lines.append(entry)
 
     lines.sort(key=lambda x: x["ts"])
     lines = lines[:_MAX_LINES]
 
+    # Collect unique src links seen across all lines for easy reference.
+    src_links = list(dict.fromkeys(
+        ln["src"] for ln in lines if ln.get("src")
+    ))
+
+    logql = f'{{helix_instrument_id=~".+"}} | json | helix_entity_id=`{entity_id}`'
     return {
         "entity_id":   entity_id,
-        "start_ts":    start_ts,
-        "end_ts":      end_ts,
         "line_count":  len(lines),
+        "src_links":   src_links,
+        "grafana_url": loki_url(logql, start_ts, end_ts),
         "lines":       lines,
     }
 

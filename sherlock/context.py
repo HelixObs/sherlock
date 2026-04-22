@@ -89,15 +89,18 @@ def _raw_url(repo: str, path: str) -> str:
     return f"https://raw.githubusercontent.com/{m.group(1)}/main/{path}"
 
 
-async def fetch_agent_docs(ctx: InstrumentContext) -> list[tuple[str, str]]:
+async def fetch_agent_docs(ctx: InstrumentContext, github_token: str = "") -> list[tuple[str, str]]:
     """Fetch all AGENT.md files listed in ctx.agent_docs from GitHub.
 
     Returns a list of (url, content) pairs for documents that were successfully
     fetched. Failures are logged and skipped — a missing doc is not fatal.
     Results are cached for _DOC_TTL seconds.
     """
+    token = github_token or os.environ.get("GITHUB_TOKEN", "")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+
     results: list[tuple[str, str]] = []
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=10, headers=headers) as client:
         for doc in ctx.agent_docs:
             for path in doc.paths:
                 try:

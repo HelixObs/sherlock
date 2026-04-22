@@ -176,10 +176,16 @@ async def run(
             )
 
             args = dict(tu.input)
-            if tu.name in ("fetch_github_file", "search_github_callers") and session.github_token:
+            if tu.name in ("fetch_github_file", "fetch_github_blame",
+                           "fetch_github_file_history", "search_github_callers") and session.github_token:
                 args["_token"] = session.github_token
             result = await dispatch(tu.name, args)
             log.info("tool %s → %d chars", tu.name, len(json.dumps(result)))
+
+            yield DiagnoseChunk(
+                type="evidence",
+                data={"tool": tu.name, "result": result},
+            )
 
             tool_results.append({
                 "type": "tool_result",

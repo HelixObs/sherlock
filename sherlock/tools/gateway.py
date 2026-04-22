@@ -12,6 +12,8 @@ import os
 
 import httpx
 
+from .grafana import tempo_url
+
 GATEWAY_URL   = os.environ.get("GATEWAY_URL",    "http://gateway:8080")
 GATEWAY_DB_URL = os.environ.get("GATEWAY_DB_URL", "")  # direct DB access for similar-error scan
 
@@ -80,7 +82,7 @@ async def query_entity_operations(entity_id: str) -> dict:
         return {"error": "asyncpg not installed"}
 
     ops_sql = """
-        SELECT operation, created_at, metadata
+        SELECT operation, trace_id, created_at, metadata
         FROM entity_operations
         WHERE entity_id = $1
         ORDER BY created_at ASC
@@ -107,6 +109,8 @@ async def query_entity_operations(entity_id: str) -> dict:
         "operations": [
             {
                 "operation":  row["operation"],
+                "trace_id":   row["trace_id"] or "",
+                "tempo_url":  tempo_url(row["trace_id"]) if row["trace_id"] else "",
                 "created_at": row["created_at"].isoformat(),
                 "metadata":   json.loads(row["metadata"]) if row["metadata"] else {},
             }
@@ -142,10 +146,12 @@ async def query_entity(entity_id: str) -> dict:
     if entity is None:
         return {"error": f"entity {entity_id!r} missing from graph response"}
 
+    tid = entity.get("trace_id", "")
     return {
         "id":           entity["id"],
         "instrument_id": entity.get("instrument_id", ""),
-        "trace_id":     entity.get("trace_id", ""),
+        "trace_id":     tid,
+        "tempo_url":    tempo_url(tid) if tid else "",
         "timestamp_ns": entity.get("timestamp_ns", 0),
         "parent_ids":   entity.get("parent_ids", []),
         "metadata":     entity.get("metadata", {}),
@@ -190,10 +196,15 @@ async def query_entity_ancestors(entity_id: str, max_depth: int = 10) -> dict:
 async def query_similar_errors(
     instrument_id: str,
     error_type: str = "",
+    operation: str = "",
     window_minutes: int = 60,
 ) -> dict:
-    """Find other entities with helix.error events for the same instrument
+    """Find other entities/operations with helix.error events for the same instrument
     in the last window_minutes.
+
+    For operation errors pass `operation` (e.g. "hdf5-conversion") to restrict the
+    search to failures of that same operation — errors in unrelated operations or
+    distant DAG ancestors are rarely the root cause.
 
     Requires GATEWAY_DB_URL to be set (direct TimescaleDB access).
     Returns entity IDs, timestamps, and error metadata to identify whether
@@ -210,25 +221,43 @@ async def query_similar_errors(
     except ImportError:
         return {"error": "asyncpg not installed — add it to pyproject.toml dependencies"}
 
-    sql = """
-        SELECT ee.entity_id, ee.timestamp_ns, ee.metadata
-        FROM entity_events ee
-        WHERE ee.instrument_id = $1
-          AND ee.event_name    = 'helix.error'
-          AND ee.created_at   >= now() - ($2 * interval '1 minute')
-        ORDER BY ee.created_at DESC
-        LIMIT 50
-    """
+    import json
+
     try:
         conn = await asyncpg.connect(GATEWAY_DB_URL)
         try:
-            rows = await conn.fetch(sql, instrument_id, window_minutes)
+            if operation:
+                # For operation errors: join entity_operations to find other entities
+                # where this specific operation failed — ignore unrelated entity errors.
+                sql = """
+                    SELECT DISTINCT ee.entity_id, ee.timestamp_ns, ee.metadata
+                    FROM entity_events ee
+                    JOIN entity_operations eo
+                      ON eo.entity_id = ee.entity_id
+                     AND eo.operation = $3
+                    WHERE ee.instrument_id = $1
+                      AND ee.event_name    = 'helix.error'
+                      AND ee.created_at   >= now() - ($2 * interval '1 minute')
+                    ORDER BY ee.timestamp_ns DESC
+                    LIMIT 50
+                """
+                rows = await conn.fetch(sql, instrument_id, window_minutes, operation)
+            else:
+                sql = """
+                    SELECT ee.entity_id, ee.timestamp_ns, ee.metadata
+                    FROM entity_events ee
+                    WHERE ee.instrument_id = $1
+                      AND ee.event_name    = 'helix.error'
+                      AND ee.created_at   >= now() - ($2 * interval '1 minute')
+                    ORDER BY ee.created_at DESC
+                    LIMIT 50
+                """
+                rows = await conn.fetch(sql, instrument_id, window_minutes)
         finally:
             await conn.close()
     except Exception as exc:
         return {"error": f"DB query failed: {exc}"}
 
-    import json
     results = [
         {
             "entity_id":    row["entity_id"],
@@ -247,6 +276,7 @@ async def query_similar_errors(
 
     return {
         "instrument_id":  instrument_id,
+        "operation":      operation,
         "error_type":     error_type,
         "window_minutes": window_minutes,
         "count":          len(results),
@@ -330,8 +360,10 @@ DEFINITIONS = [
         "description": (
             "Find other entities from the same instrument that had helix.error events "
             "in a recent time window. Use this at Level 3 to distinguish an isolated "
-            "failure from a widespread pattern, which changes the classification "
-            "(code bug vs infrastructure)."
+            "failure from a widespread pattern (code bug vs infrastructure). "
+            "For operation errors (hdf5-conversion, replication, registration) always "
+            "pass the `operation` name so the search is scoped to that specific operation "
+            "— errors in unrelated operations or distant DAG ancestors are not relevant."
         ),
         "input_schema": {
             "type": "object",
@@ -339,6 +371,13 @@ DEFINITIONS = [
                 "instrument_id": {
                     "type": "string",
                     "description": "Instrument identifier (e.g. 'CHIME')",
+                },
+                "operation": {
+                    "type": "string",
+                    "description": (
+                        "Operation name to restrict the search to (e.g. 'hdf5-conversion'). "
+                        "Required when the error is on an operation — omit for entity-level errors."
+                    ),
                 },
                 "error_type": {
                     "type": "string",

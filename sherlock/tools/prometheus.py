@@ -11,6 +11,8 @@ import os
 
 import httpx
 
+from .grafana import prometheus_url
+
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090")
 
 # ── Tool implementation ───────────────────────────────────────────────────────
@@ -45,6 +47,7 @@ async def query_prometheus(metric_expr: str, timestamp: int) -> dict:
             "timestamp":   timestamp,
             "result_type": result_type,
             "series":      [],
+            "grafana_url": prometheus_url(metric_expr, timestamp),
             "note":        "No data returned — metric may not exist or timestamp is out of retention.",
         }
 
@@ -63,6 +66,7 @@ async def query_prometheus(metric_expr: str, timestamp: int) -> dict:
         "timestamp":   timestamp,
         "result_type": result_type,
         "series":      series,
+        "grafana_url": prometheus_url(metric_expr, timestamp),
     }
 
 

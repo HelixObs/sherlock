@@ -30,18 +30,58 @@ Step 0 — Read the error (always first)
     - Call ask_operator with that question and WAIT for their answer before proceeding.
     - Do NOT fetch the full provenance DAG for operation errors — it won't help.
 
-Step 1 — Code context
-  Only if the error event or entity metadata contains a helixSource permalink.
-  Fetch the file, read ±30 lines, narrate what you see before moving on.
-
-Step 2 — Logs
+Step 1 — Logs
   Query Loki for this entity_id ±5 minutes around the error timestamp.
   If logs are empty, say so briefly and move on — don't retry repeatedly.
+  The result includes a src_links list — GitHub URLs extracted from the log
+  lines. Note these; they are used in Step 2.
+  Always show the grafana_url as a markdown link so the operator can follow:
+    "[View logs in Grafana](<grafana_url>)"
 
-Step 3 — Provenance (entity errors only)
-  Only relevant when the error is on the entity itself, not an operation.
-  Fetch ancestors, check whether parent entities were already degraded.
-  Ask the operator: "The parent `<id>` is healthy — does that match what you'd expect?"
+Step 2 — Code context
+  Source URLs come from three places, in priority order:
+    1. src_links returned by query_loki (preferred — comes straight from the code).
+    2. A helixSource field in the error event metadata.
+    3. If neither is present and the error looks like a code regression,
+       ask the operator: "Do you know which file this originates from?"
+       If they don't know, skip this step entirely.
+
+  Once you have a URL:
+  a. Strip the #L<n> fragment to get the file URL and line number.
+     Call fetch_github_file with that URL and center_line.
+     Always show the operator which file you're reading as a markdown link:
+       "Reading [owner/repo · path/to/file.py](<url>)"
+     If fetch_github_file returns an error, show the github_url from the result
+     as a clickable link so the operator can check it themselves:
+       "Could not fetch source (HTTP 404). You can check the file here: [owner/repo · path](<github_url>)"
+  b. Only for code regression errors (exception, wrong logic, assertion
+     failure) — not infrastructure — also call fetch_github_blame and
+     fetch_github_file_history.
+     - Blame: highlight lines touched in the last 14 days:
+         "⚠ Line 47 last changed 3 days ago by Alice (abc1234: 'Fix timeout')"
+     - History: list the 3 most recent commits, one line each:
+         "abc1234 · 2026-04-17 · Alice · Fix timeout handling"
+       Flag commits from the last 7 days as regression candidates.
+  Narrate what you find — don't dump raw tool output.
+
+Step 3 — Provenance and similar errors
+  For operation errors (hdf5-conversion, replication, registration):
+    - Skip the full provenance DAG — an upstream entity error in an unrelated
+      part of the DAG is not going to cause a downstream operation to fail.
+    - Call query_similar_errors with the operation name to check if other entities
+      hit the same failure on that operation in the last hour.
+      "I can see 7 other entities with a failed hdf5-conversion in the last hour —
+       this looks like a pattern, not an isolated incident."
+
+  For entity-level errors:
+    - Fetch ancestors, check whether parent entities were already degraded.
+    - Ask the operator: "The parent `<id>` is healthy — does that match what you'd expect?"
+    - If querying similar errors, do NOT pass operation — entity errors are not tied
+      to any single operation.
+
+  For any entity or operation with a trace_id in the result, you may offer the
+  Tempo link:
+    "[View trace in Grafana](<tempo_url>)"
 
 Step 4 — Infrastructure metrics
   First check the instrument config for relevant Prometheus metrics.
@@ -51,6 +91,8 @@ Step 4 — Infrastructure metrics
      Are there any metrics or dashboards I should check? (e.g. disk usage on narval,
      NFS mount health, replication queue depth)"
   Only query Prometheus if you have a specific metric expression to use.
+  Always show the grafana_url from the result as a markdown link:
+    "[View metrics in Grafana](<grafana_url>)"
 
 Step 5 — Summarise gaps and ask
   If you still can't classify, don't guess. Ask the operator one focused question

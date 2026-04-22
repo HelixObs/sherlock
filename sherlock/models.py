@@ -80,6 +80,6 @@ class MemoryEntry(BaseModel):
 
 class DiagnoseChunk(BaseModel):
     """One NDJSON chunk streamed during an investigation."""
-    type: str           # "step" | "hypothesis" | "question" | "memory_prompt" | "done" | "error"
+    type: str           # "step" | "evidence" | "hypothesis" | "question" | "memory_prompt" | "done" | "error"
     text: str = ""
     data: dict = Field(default_factory=dict)
