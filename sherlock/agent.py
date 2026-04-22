@@ -13,11 +13,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time as _time
 from collections.abc import AsyncGenerator
 
 import anthropic
 
 from sherlock import memory as mem
+from sherlock import metrics as mtx
 from sherlock import prompt
 from sherlock.models import DiagnoseChunk, HypothesisData, InstrumentContext
 from sherlock.sessions import Session  # noqa: F401 — used by _done_chunk type hint
@@ -60,6 +62,7 @@ async def run(
 
     Yields DiagnoseChunk objects:
       type="step"         — streaming text token or tool call announcement
+      type="evidence"     — raw tool result (shown in UI evidence panel)
       type="hypothesis"   — final classification (data from submit_hypothesis)
       type="question"     — operator question (data from ask_operator)
       type="error"        — unrecoverable error
@@ -79,8 +82,11 @@ async def run(
         client = _client()
     except RuntimeError as exc:
         yield DiagnoseChunk(type="error", text=str(exc))
-        yield DiagnoseChunk(type="done", text="")
+        yield _done_chunk(session, successful=False)
         return
+
+    investigation_start = _time.monotonic()
+    tool_call_count = 0
 
     while session.turn_count < MAX_TURNS:
         session.turn_count += 1
@@ -121,7 +127,7 @@ async def run(
             "content": final.content,
         })
 
-            # ── No tool calls → model finished speaking without submit_hypothesis ──
+        # ── No tool calls → model finished speaking without submit_hypothesis ──
         if not tool_uses:
             break
 
@@ -148,7 +154,9 @@ async def run(
                         await mem.save(session.instrument_id, session.entity_id, hypothesis)
                     except Exception:
                         log.exception("failed to save memory")
-                yield _done_chunk(session)
+                done = _done_chunk(session, successful=True)
+                await _persist_usage(session, tool_call_count, investigation_start, successful=True)
+                yield done
                 return
 
             if tu.name == "ask_operator":
@@ -179,7 +187,20 @@ async def run(
             if tu.name in ("fetch_github_file", "fetch_github_blame",
                            "fetch_github_file_history", "search_github_callers") and session.github_token:
                 args["_token"] = session.github_token
-            result = await dispatch(tu.name, args)
+
+            tool_start = _time.monotonic()
+            try:
+                result = await dispatch(tu.name, args)
+                mtx.tool_calls_total.labels(tool_name=tu.name, status="success").inc()
+            except Exception as exc:
+                result = {"error": str(exc)}
+                mtx.tool_calls_total.labels(tool_name=tu.name, status="failed").inc()
+            finally:
+                mtx.tool_call_duration_seconds.labels(tool_name=tu.name).observe(
+                    _time.monotonic() - tool_start
+                )
+
+            tool_call_count += 1
             log.info("tool %s → %d chars", tu.name, len(json.dumps(result)))
 
             yield DiagnoseChunk(
@@ -202,10 +223,33 @@ async def run(
             text="\n\n*Turn limit reached. Summarising based on evidence gathered so far.*\n",
         )
 
-    yield _done_chunk(session)
+    await _persist_usage(session, tool_call_count, investigation_start, successful=False)
+    yield _done_chunk(session, successful=False)
 
 
-def _done_chunk(session: Session) -> DiagnoseChunk:
+async def _persist_usage(
+    session: Session,
+    tool_call_count: int,
+    start: float,
+    successful: bool,
+) -> None:
+    cost = _estimate_cost(MODEL, session.input_tokens, session.output_tokens)
+    duration_ms = int((_time.monotonic() - start) * 1000)
+    await mtx.record_usage(
+        session_id=session.id,
+        instrument_id=session.instrument_id or "",
+        entity_id=session.entity_id,
+        model=MODEL,
+        tokens_input=session.input_tokens,
+        tokens_output=session.output_tokens,
+        cost_usd=cost,
+        duration_ms=duration_ms,
+        tool_call_count=tool_call_count,
+        successful=successful,
+    )
+
+
+def _done_chunk(session: Session, successful: bool = True) -> DiagnoseChunk:
     cost = _estimate_cost(MODEL, session.input_tokens, session.output_tokens)
     return DiagnoseChunk(
         type="done",

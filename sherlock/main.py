@@ -9,13 +9,14 @@ from collections.abc import AsyncGenerator
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 
-from sherlock import agent, context, memory as mem, sessions
+from sherlock import agent, context, memory as mem, metrics as mtx, sessions
 from sherlock.models import DiagnoseChunk, DiagnoseRequest, MemoryEntry, ReplyRequest
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 app = FastAPI(title="Sherlock", description="AI troubleshooting agent for HelixObs")
+mtx.start_metrics_server()
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
