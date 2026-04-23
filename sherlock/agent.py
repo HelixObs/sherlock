@@ -173,7 +173,8 @@ async def run(
                     "content": "[waiting for operator reply]",
                 })
                 session.history.append({"role": "user", "content": tool_results})
-                # No done chunk here — session continues via /reply.
+                # Persist partial usage so sherlock_usage always has a record.
+                await _persist_usage(session, tool_call_count, investigation_start, successful=False)
                 return
 
             # Real investigation tool — announce and dispatch.

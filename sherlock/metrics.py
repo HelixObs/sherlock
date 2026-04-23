@@ -82,8 +82,32 @@ tool_call_duration_seconds = Histogram(
 )
 
 
+_QUERY_TYPES = ["diagnosis", "reply"]
+_STATUSES = ["success", "failed"]
+_MODELS = ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001", "memory"]
+
+
+def _init_label_combinations() -> None:
+    """Pre-initialize all label combinations so Prometheus emits samples on startup.
+
+    prometheus_client only emits sample lines after the first inc()/observe().
+    Without this, stat panels show no data until the first investigation runs.
+    """
+    for qt in _QUERY_TYPES:
+        for st in _STATUSES:
+            queries_total.labels(query_type=qt, status=st)
+        query_duration_seconds.labels(query_type=qt)
+    for model in _MODELS:
+        tokens_input_total.labels(model=model)
+        tokens_output_total.labels(model=model)
+        tokens_total.labels(model=model)
+        cost_usd_total.labels(model=model)
+        cost_per_query_usd.labels(model=model)
+
+
 def start_metrics_server() -> None:
     """Start the Prometheus metrics HTTP server in a background thread."""
+    _init_label_combinations()
     try:
         start_http_server(METRICS_PORT)
         log.info("sherlock metrics listening on :%d", METRICS_PORT)
