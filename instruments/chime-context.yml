@@ -24,7 +24,7 @@ pipeline:
         - type: MODEL_LOAD_FAILURE
           hint: "Model weights missing or corrupt. Check /data/models/ on the classifier nodes."
 
-    - name: clustering
+    - name: l2-l3
       description: "Clusters beam candidates into FRB events"
       known_failures:
         - type: INSUFFICIENT_CANDIDATES
@@ -39,8 +39,8 @@ pipeline:
           hint: "Archive NFS mount may be unresponsive. Check archive cluster health."
 
 contacts:
-  oncall:     "@chime-ops"
-  escalation: "@chime-science-lead"
+  oncall:     "@frb_tsar"
+  escalation: "@frbadmin"
 
 # AGENT.md files Sherlock fetches from GitHub for architectural context.
 # Each entry is a repo; paths defaults to [AGENT.md] if omitted.
