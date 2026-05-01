@@ -6,9 +6,10 @@ Generates URLs using Grafana 11's panes format (?panes=...&schemaVersion=1).
 from __future__ import annotations
 
 import json
+import os
 from urllib.parse import quote
 
-GRAFANA = "http://localhost:3001"
+GRAFANA = os.getenv("GRAFANA_URL", "http://localhost:3001")
 
 _SCHEMA = 1
 
