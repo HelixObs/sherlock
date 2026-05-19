@@ -142,3 +142,42 @@ def test_prometheus_extra_fields(tmp_path, monkeypatch):
     ctx = context.load("MYTEL")
     assert ctx.prometheus.node_memory == "mem_metric"
     assert ctx.prometheus.extra["custom_metric"] == "my_custom_gauge"
+
+
+def test_github_token_resolved_from_env(tmp_path, monkeypatch):
+    """github_token is resolved from notifications.github_token_env at load time."""
+    monkeypatch.setenv("SHERLOCK_INSTRUMENTS_DIR", str(tmp_path))
+    monkeypatch.setenv("MY_GITHUB_PAT", "ghp_test_secret_token")
+    _write_config(tmp_path, "mytel-context.yml", """
+        instrument_id: MYTEL
+        notifications:
+          github_token_env: MY_GITHUB_PAT
+    """)
+    ctx = context.load("MYTEL")
+    assert ctx is not None
+    assert ctx.github_token == "ghp_test_secret_token"
+
+
+def test_github_token_empty_when_env_missing(tmp_path, monkeypatch):
+    """github_token is empty string when the referenced env var is not set."""
+    monkeypatch.setenv("SHERLOCK_INSTRUMENTS_DIR", str(tmp_path))
+    monkeypatch.delenv("UNSET_GITHUB_TOKEN_ENV", raising=False)
+    _write_config(tmp_path, "mytel-context.yml", """
+        instrument_id: MYTEL
+        notifications:
+          github_token_env: UNSET_GITHUB_TOKEN_ENV
+    """)
+    ctx = context.load("MYTEL")
+    assert ctx is not None
+    assert ctx.github_token == ""
+
+
+def test_github_token_absent_when_no_notifications(tmp_path, monkeypatch):
+    """github_token defaults to empty string when notifications section is absent."""
+    monkeypatch.setenv("SHERLOCK_INSTRUMENTS_DIR", str(tmp_path))
+    _write_config(tmp_path, "mytel-context.yml", """
+        instrument_id: MYTEL
+    """)
+    ctx = context.load("MYTEL")
+    assert ctx is not None
+    assert ctx.github_token == ""

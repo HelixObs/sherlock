@@ -96,7 +96,7 @@ async def fetch_agent_docs(ctx: InstrumentContext, github_token: str = "") -> li
     fetched. Failures are logged and skipped — a missing doc is not fatal.
     Results are cached for _DOC_TTL seconds.
     """
-    token = github_token or os.environ.get("GITHUB_TOKEN", "")
+    token = github_token or (ctx.github_token if ctx else "") or os.environ.get("GITHUB_TOKEN", "")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
     results: list[tuple[str, str]] = []
@@ -161,6 +161,12 @@ def _parse(raw: dict) -> InstrumentContext:
         paths = entry.get("paths", ["AGENT.md"])
         agent_docs.append(AgentDoc(repo=entry["repo"], paths=paths))
 
+    # Resolve GitHub token from notifications.github_token_env (same pattern as gateway notifier).
+    github_token = ""
+    token_env = (raw.get("notifications") or {}).get("github_token_env", "")
+    if token_env:
+        github_token = os.environ.get(token_env, "")
+
     return InstrumentContext(
         instrument_id=raw["instrument_id"],
         description=raw.get("description", ""),
@@ -168,4 +174,5 @@ def _parse(raw: dict) -> InstrumentContext:
         pipeline=stages,
         contacts=contacts,
         agent_docs=agent_docs,
+        github_token=github_token,
     )

@@ -36,8 +36,10 @@ async def diagnose(entity_id: str, body: DiagnoseRequest) -> StreamingResponse:
     replies via POST /diagnose/{session_id}/reply.
     """
     instrument_ctx = context.load(body.instrument_id) if body.instrument_id else None
-    agent_docs = await context.fetch_agent_docs(instrument_ctx, body.github_token) if instrument_ctx else []
-    session = sessions.create(entity_id, body.instrument_id, body.github_token)
+    # Operator-supplied token takes precedence; fall back to instrument config token.
+    github_token = body.github_token or (instrument_ctx.github_token if instrument_ctx else "")
+    agent_docs = await context.fetch_agent_docs(instrument_ctx, github_token) if instrument_ctx else []
+    session = sessions.create(entity_id, body.instrument_id, github_token)
 
     # If we have a prior investigation for this entity, replay it from memory
     # instead of running the full agent loop again.

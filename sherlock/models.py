@@ -43,6 +43,7 @@ class InstrumentContext(BaseModel):
     pipeline: list[PipelineStage] = Field(default_factory=list)
     contacts: Contacts = Field(default_factory=Contacts)
     agent_docs: list[AgentDoc] = Field(default_factory=list)
+    github_token: str = ""  # resolved from notifications.github_token_env at load time; never logged
 
 
 # ── API shapes ────────────────────────────────────────────────────────────────
