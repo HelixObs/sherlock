@@ -15,7 +15,7 @@ from sherlock.models import HypothesisData, MemoryEntry
 
 log = logging.getLogger(__name__)
 
-DB_URL = os.environ.get("GATEWAY_DB_URL", "")
+DB_URL = os.environ.get("HERALD_DB_URL", "")
 _MAX_ENTRIES = 20   # entries fed into the system prompt per investigation
 
 

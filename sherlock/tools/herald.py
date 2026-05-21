@@ -3,7 +3,7 @@
 query_entity          — fetch a single entity's metadata and events from the graph API
 query_entity_ancestors — fetch the full provenance DAG for an entity
 query_similar_errors  — find other entities with helix.error events in a time window
-                        (queries TimescaleDB directly — GATEWAY_DB_URL required)
+                        (queries TimescaleDB directly — HERALD_DB_URL required)
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ import httpx
 
 from .grafana import tempo_url
 
-GATEWAY_URL   = os.environ.get("GATEWAY_URL",    "http://gateway:8080")
-GATEWAY_DB_URL = os.environ.get("GATEWAY_DB_URL", "")  # direct DB access for similar-error scan
+HERALD_URL   = os.environ.get("HERALD_URL",    "http://herald:8080")
+HERALD_DB_URL = os.environ.get("HERALD_DB_URL", "")  # direct DB access for similar-error scan
 
 # ── Tool implementations ──────────────────────────────────────────────────────
 
@@ -26,10 +26,10 @@ async def query_entity_events(entity_id: str) -> dict:
     Always call this first when an entity has has_error=true — the error message
     is here, not in the provenance graph.
     """
-    if not GATEWAY_DB_URL:
+    if not HERALD_DB_URL:
         return {
-            "error": "GATEWAY_DB_URL not configured",
-            "hint": "Set GATEWAY_DB_URL in the Sherlock environment.",
+            "error": "HERALD_DB_URL not configured",
+            "hint": "Set HERALD_DB_URL in the Sherlock environment.",
         }
     try:
         import asyncpg
@@ -43,7 +43,7 @@ async def query_entity_events(entity_id: str) -> dict:
         ORDER BY timestamp_ns ASC
     """
     try:
-        conn = await asyncpg.connect(GATEWAY_DB_URL)
+        conn = await asyncpg.connect(HERALD_DB_URL)
         try:
             rows = await conn.fetch(sql, entity_id)
         finally:
@@ -71,10 +71,10 @@ async def query_entity_operations(entity_id: str) -> dict:
     Returns operation name, timestamp, metadata, and any associated error events.
     Use this when entity has_error=true to identify which operation failed and why.
     """
-    if not GATEWAY_DB_URL:
+    if not HERALD_DB_URL:
         return {
-            "error": "GATEWAY_DB_URL not configured",
-            "hint": "Set GATEWAY_DB_URL in the Sherlock environment.",
+            "error": "HERALD_DB_URL not configured",
+            "hint": "Set HERALD_DB_URL in the Sherlock environment.",
         }
     try:
         import asyncpg
@@ -94,7 +94,7 @@ async def query_entity_operations(entity_id: str) -> dict:
         ORDER BY timestamp_ns ASC
     """
     try:
-        conn = await asyncpg.connect(GATEWAY_DB_URL)
+        conn = await asyncpg.connect(HERALD_DB_URL)
         try:
             ops  = await conn.fetch(ops_sql,    entity_id)
             evts = await conn.fetch(events_sql, entity_id)
@@ -134,11 +134,11 @@ async def query_entity(entity_id: str) -> dict:
     has a helix.error event.
     """
     async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.get(f"{GATEWAY_URL}/api/v1/entity/{entity_id}/graph")
+        r = await client.get(f"{HERALD_URL}/api/v1/entity/{entity_id}/graph")
         if r.status_code == 404:
             return {"error": f"entity {entity_id!r} not found"}
         if r.status_code != 200:
-            return {"error": f"gateway returned HTTP {r.status_code}"}
+            return {"error": f"herald returned HTTP {r.status_code}"}
 
     graph = r.json()
     nodes = {n["id"]: n for n in graph.get("nodes", [])}
@@ -166,11 +166,11 @@ async def query_entity_ancestors(entity_id: str, max_depth: int = 10) -> dict:
     Use this at Level 3 to check whether parent entities were already degraded.
     """
     async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.get(f"{GATEWAY_URL}/api/v1/entity/{entity_id}/graph")
+        r = await client.get(f"{HERALD_URL}/api/v1/entity/{entity_id}/graph")
         if r.status_code == 404:
             return {"error": f"entity {entity_id!r} not found"}
         if r.status_code != 200:
-            return {"error": f"gateway returned HTTP {r.status_code}"}
+            return {"error": f"herald returned HTTP {r.status_code}"}
 
     graph = r.json()
     nodes = graph.get("nodes", [])
@@ -206,14 +206,14 @@ async def query_similar_errors(
     search to failures of that same operation — errors in unrelated operations or
     distant DAG ancestors are rarely the root cause.
 
-    Requires GATEWAY_DB_URL to be set (direct TimescaleDB access).
+    Requires HERALD_DB_URL to be set (direct TimescaleDB access).
     Returns entity IDs, timestamps, and error metadata to identify whether
     this error is isolated (one entity) or a pattern (many entities).
     """
-    if not GATEWAY_DB_URL:
+    if not HERALD_DB_URL:
         return {
-            "error": "GATEWAY_DB_URL not configured — cannot query similar errors directly",
-            "hint":  "Set GATEWAY_DB_URL in the Sherlock environment to enable this tool.",
+            "error": "HERALD_DB_URL not configured — cannot query similar errors directly",
+            "hint":  "Set HERALD_DB_URL in the Sherlock environment to enable this tool.",
         }
 
     try:
@@ -224,7 +224,7 @@ async def query_similar_errors(
     import json
 
     try:
-        conn = await asyncpg.connect(GATEWAY_DB_URL)
+        conn = await asyncpg.connect(HERALD_DB_URL)
         try:
             if operation:
                 # For operation errors: join entity_operations to find other entities

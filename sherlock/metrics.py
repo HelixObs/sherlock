@@ -19,7 +19,7 @@ from prometheus_client import (
 
 log = logging.getLogger(__name__)
 
-DB_URL = os.environ.get("GATEWAY_DB_URL", "")
+DB_URL = os.environ.get("HERALD_DB_URL", "")
 METRICS_PORT = int(os.environ.get("SHERLOCK_METRICS_PORT", "9102"))
 
 # ── Prometheus metrics ────────────────────────────────────────────────────────
