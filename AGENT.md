@@ -29,8 +29,6 @@ sherlock/
                   search_github_callers
     output.py     submit_hypothesis, ask_operator (loop-control tools — no handlers)
     grafana.py    Grafana/Tempo URL helpers (not a tool, imported by gateway.py)
-instruments/
-  chime-context.yml   Reference CHIME instrument config
 tests/
   test_api.py
   test_context.py
@@ -96,7 +94,7 @@ via `record_usage()` for durable cost tracking — Prometheus data resets on res
 
 | Variable | Default | Description |
 |---|---|---|
-| `SHERLOCK_INSTRUMENTS_DIR` | `../instruments` (relative to package) | Path to YAML instrument configs |
+| `SHERLOCK_INSTRUMENTS_DIR` | `/app/instruments` | Path to YAML instrument configs (volume-mounted from `deploy/instruments/`) |
 | `ANTHROPIC_API_KEY` | — | Required for the agent loop |
 | `SHERLOCK_MODEL` | `claude-sonnet-4-6` | Claude model ID |
 | `GATEWAY_URL` | `http://gateway:8080` | Gateway HTTP API base URL |
@@ -112,7 +110,7 @@ uvicorn sherlock.main:app --reload --port 8082
 
 ## Adding a new instrument config
 
-Create `instruments/<instrument_id_lowercase>-context.yml` following the CHIME example.
+Create `deploy/instruments/<instrument_id_lowercase>-context.yml` following `deploy/instruments/example-instrument.yml`.
 The context loader tries `{slug}-context.yml` then `{slug}.yml` — no code changes needed.
 
 ## Adding a new investigation tool

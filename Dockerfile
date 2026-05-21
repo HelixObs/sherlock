@@ -6,7 +6,6 @@ COPY sherlock/pyproject.toml .
 RUN pip install --no-cache-dir -e .
 
 COPY sherlock/sherlock/ sherlock/
-COPY sherlock/instruments/ instruments/
 
 ENV SHERLOCK_INSTRUMENTS_DIR=/app/instruments
 
