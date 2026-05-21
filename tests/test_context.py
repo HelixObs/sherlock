@@ -107,7 +107,7 @@ def test_agent_docs_parsed(tmp_path, monkeypatch):
         instrument_id: MYTEL
         agent_docs:
           - repo: https://github.com/HelixObs/mock-telescope
-          - repo: https://github.com/HelixObs/gateway
+          - repo: https://github.com/HelixObs/herald
             paths: [AGENT.md, internal/db/AGENT.md]
     """)
     ctx = context.load("MYTEL")
@@ -120,15 +120,15 @@ def test_agent_docs_parsed(tmp_path, monkeypatch):
 
 def test_raw_url_conversion():
     from sherlock.context import _raw_url
-    url = _raw_url("https://github.com/HelixObs/gateway", "AGENT.md")
-    assert url == "https://raw.githubusercontent.com/HelixObs/gateway/main/AGENT.md"
+    url = _raw_url("https://github.com/HelixObs/herald", "AGENT.md")
+    assert url == "https://raw.githubusercontent.com/HelixObs/herald/main/AGENT.md"
 
 
 def test_raw_url_strips_git_suffix():
     from sherlock.context import _raw_url
-    url = _raw_url("https://github.com/HelixObs/gateway.git", "internal/db/AGENT.md")
+    url = _raw_url("https://github.com/HelixObs/herald.git", "internal/db/AGENT.md")
     assert "raw.githubusercontent.com" in url
-    assert "gateway.git" not in url   # .git suffix stripped from repo slug
+    assert "herald.git" not in url   # .git suffix stripped from repo slug
 
 
 def test_prometheus_extra_fields(tmp_path, monkeypatch):

@@ -11,7 +11,7 @@ from httpx import Response
 from sherlock.tools import dispatch
 from sherlock.tools.github import _to_raw_url, fetch_github_file, search_github_callers
 from sherlock.tools.loki import query_loki
-from sherlock.tools.gateway import query_entity, query_entity_ancestors
+from sherlock.tools.herald import query_entity, query_entity_ancestors
 from sherlock.tools.prometheus import query_prometheus
 
 
@@ -106,7 +106,7 @@ async def test_query_loki_http_error():
     assert "error" in result
 
 
-# ── gateway.py ────────────────────────────────────────────────────────────────
+# ── herald.py ─────────────────────────────────────────────────────────────────
 
 @respx.mock
 async def test_query_entity_returns_node():
@@ -114,7 +114,7 @@ async def test_query_entity_returns_node():
         "nodes": [{"id": "frb-123", "instrument_id": "CHIME", "trace_id": "aabb", "timestamp_ns": 1000, "parent_ids": ["block-1"], "metadata": {"snr": "22"}, "has_error": True}],
         "edges": [],
     }
-    respx.get("http://gateway:8080/api/v1/entity/frb-123/graph").mock(
+    respx.get("http://herald:8080/api/v1/entity/frb-123/graph").mock(
         return_value=Response(200, json=graph)
     )
     result = await query_entity("frb-123")
@@ -125,7 +125,7 @@ async def test_query_entity_returns_node():
 
 @respx.mock
 async def test_query_entity_not_found():
-    respx.get("http://gateway:8080/api/v1/entity/missing/graph").mock(
+    respx.get("http://herald:8080/api/v1/entity/missing/graph").mock(
         return_value=Response(404)
     )
     result = await query_entity("missing")
@@ -141,7 +141,7 @@ async def test_query_entity_ancestors_returns_graph():
         ],
         "edges": [{"source": "cand-1", "target": "frb-123"}],
     }
-    respx.get("http://gateway:8080/api/v1/entity/frb-123/graph").mock(
+    respx.get("http://herald:8080/api/v1/entity/frb-123/graph").mock(
         return_value=Response(200, json=graph)
     )
     result = await query_entity_ancestors("frb-123")
@@ -195,7 +195,7 @@ async def test_dispatch_unknown_tool():
 
 @respx.mock
 async def test_dispatch_routes_correctly():
-    respx.get("http://gateway:8080/api/v1/entity/frb-abc/graph").mock(
+    respx.get("http://herald:8080/api/v1/entity/frb-abc/graph").mock(
         return_value=Response(200, json={
             "nodes": [{"id": "frb-abc", "instrument_id": "CHIME", "trace_id": "", "timestamp_ns": 1, "parent_ids": [], "metadata": {}, "has_error": False}],
             "edges": [],
