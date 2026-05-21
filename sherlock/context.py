@@ -161,7 +161,7 @@ def _parse(raw: dict) -> InstrumentContext:
         paths = entry.get("paths", ["AGENT.md"])
         agent_docs.append(AgentDoc(repo=entry["repo"], paths=paths))
 
-    # Resolve GitHub token from notifications.github_token_env (same pattern as gateway notifier).
+    # Resolve GitHub token from notifications.github_token_env (same pattern as herald notifier).
     github_token = ""
     token_env = (raw.get("notifications") or {}).get("github_token_env", "")
     if token_env:

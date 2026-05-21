@@ -21,14 +21,14 @@ sherlock/
   sessions.py     In-memory session store with 30-min TTL
   tools/
     __init__.py   DEFINITIONS list + dispatch() — routes Claude tool calls to handlers
-    gateway.py    query_entity, query_entity_ancestors, query_entity_events,
+    herald.py    query_entity, query_entity_ancestors, query_entity_events,
                   query_entity_operations, query_similar_errors
     loki.py       get_logs, search_logs
     prometheus.py get_metrics, query_prometheus
     github.py     fetch_github_file, fetch_github_blame, fetch_github_file_history,
                   search_github_callers
     output.py     submit_hypothesis, ask_operator (loop-control tools — no handlers)
-    grafana.py    Grafana/Tempo URL helpers (not a tool, imported by gateway.py)
+    grafana.py    Grafana/Tempo URL helpers (not a tool, imported by herald.py)
 tests/
   test_api.py
   test_context.py
@@ -46,7 +46,7 @@ tests/
 
 1. **Code context** — `helixSource` GitHub permalink from error metadata (fetch_github_file, fetch_github_blame)
 2. **Logs** — Loki query for entity_id ± 5 min (get_logs, search_logs)
-3. **Entity provenance** — gateway recursive CTE (query_entity_ancestors)
+3. **Entity provenance** — herald recursive CTE (query_entity_ancestors)
 4. **Node metrics** — Prometheus, using Tier 1/2 metric names (get_metrics, query_prometheus)
 5. **Open question** — state gaps, ask operator (ask_operator tool → pauses session)
 
@@ -97,8 +97,8 @@ via `record_usage()` for durable cost tracking — Prometheus data resets on res
 | `SHERLOCK_INSTRUMENTS_DIR` | `/app/instruments` | Path to YAML instrument configs (volume-mounted from `deploy/instruments/`) |
 | `ANTHROPIC_API_KEY` | — | Required for the agent loop |
 | `SHERLOCK_MODEL` | `claude-sonnet-4-6` | Claude model ID |
-| `GATEWAY_URL` | `http://gateway:8080` | Gateway HTTP API base URL |
-| `GATEWAY_DB_URL` | — | Direct TimescaleDB URL for entity_events / similar_errors queries |
+| `HERALD_URL` | `http://herald:8080` | Herald HTTP API base URL |
+| `HERALD_DB_URL` | — | Direct TimescaleDB URL for entity_events / similar_errors queries |
 | `SHERLOCK_METRICS_PORT` | `9102` | Prometheus metrics port |
 
 ## Running locally

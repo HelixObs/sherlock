@@ -1,4 +1,4 @@
-"""Gateway / TimescaleDB investigation tools.
+"""Herald / TimescaleDB investigation tools.
 
 query_entity          — fetch a single entity's metadata and events from the graph API
 query_entity_ancestors — fetch the full provenance DAG for an entity
@@ -128,7 +128,7 @@ async def query_entity_operations(entity_id: str) -> dict:
 
 
 async def query_entity(entity_id: str) -> dict:
-    """Fetch a single entity's provenance graph (depth=1) from the gateway API.
+    """Fetch a single entity's provenance graph (depth=1) from the herald API.
 
     Returns the entity node's metadata, parent_ids, trace_id, and whether it
     has a helix.error event.
@@ -160,7 +160,7 @@ async def query_entity(entity_id: str) -> dict:
 
 
 async def query_entity_ancestors(entity_id: str, max_depth: int = 10) -> dict:
-    """Fetch the full provenance DAG for an entity from the gateway API.
+    """Fetch the full provenance DAG for an entity from the herald API.
 
     Returns all ancestor and immediate descendant nodes with edges.
     Use this at Level 3 to check whether parent entities were already degraded.
@@ -325,7 +325,7 @@ DEFINITIONS = [
         "name": "query_entity",
         "description": (
             "Fetch a single entity's metadata, parent_ids, trace_id, and error status "
-            "from the HelixObs gateway. Use this at the start of an investigation to "
+            "from the HelixObs herald. Use this at the start of an investigation to "
             "understand what the entity is and whether it already has errors."
         ),
         "input_schema": {
