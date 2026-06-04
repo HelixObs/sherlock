@@ -2,7 +2,8 @@
 
 Queries Loki for logs correlated with a specific entity_id in a time window.
 helix_entity_id is NOT a Loki stream label (cardinality constraint) — it is
-filtered at query time using the JSON pipeline operator.
+filtered at query time as a structured metadata filter (| helix_entity_id = ...).
+Pass instrument_id to narrow the stream selector and avoid a full cross-instrument scan.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ _MAX_LINES = 50
 _MIN_WINDOW_NS = 5 * 60 * 1_000_000_000   # 5 minutes in nanoseconds
 
 
-async def query_loki(entity_id: str, start_ts: int, end_ts: int) -> dict:
+async def query_loki(entity_id: str, start_ts: int, end_ts: int, instrument_id: str | None = None) -> dict:
     """Query Loki for log lines associated with entity_id in [start_ts, end_ts].
 
     Timestamps are Unix nanoseconds (matching the OTel/HelixObs convention).
@@ -37,7 +38,16 @@ async def query_loki(entity_id: str, start_ts: int, end_ts: int) -> dict:
         start_ts = mid - _MIN_WINDOW_NS
         end_ts   = mid + _MIN_WINDOW_NS
 
-    logql = f'{{helix_instrument_id=~".+"}} | json | helix_entity_id=`{entity_id}`'
+    # Use an exact-match stream selector when instrument_id is known — avoids
+    # a full cross-instrument scan.  Fall back to regex only when unknown.
+    if instrument_id:
+        stream_selector = f'{{helix_instrument_id="{instrument_id}"}}'
+    else:
+        stream_selector = '{helix_instrument_id=~".+"}'
+
+    # helix_entity_id is structured metadata (set by both Alloy and OTLP paths),
+    # not a JSON body field — use the structured metadata filter directly.
+    logql = f'{stream_selector} | helix_entity_id = `{entity_id}`'
     params = {
         "query": logql,
         "start": str(start_ts),
@@ -81,7 +91,6 @@ async def query_loki(entity_id: str, start_ts: int, end_ts: int) -> dict:
         ln["src"] for ln in lines if ln.get("src")
     ))
 
-    logql = f'{{helix_instrument_id=~".+"}} | json | helix_entity_id=`{entity_id}`'
     return {
         "entity_id":   entity_id,
         "line_count":  len(lines),
@@ -115,6 +124,10 @@ DEFINITIONS = [
                 "end_ts": {
                     "type": "integer",
                     "description": "Window end as Unix nanoseconds (e.g. error_ts + 60_000_000_000 for +1 min)",
+                },
+                "instrument_id": {
+                    "type": "string",
+                    "description": "Instrument ID (e.g. CHIMEFRB) — narrows the Loki stream selector to avoid a full cross-instrument scan. Always pass this when known from query_entity.",
                 },
             },
             "required": ["entity_id", "start_ts", "end_ts"],
