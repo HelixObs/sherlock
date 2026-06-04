@@ -198,9 +198,14 @@ async def query_similar_errors(
     error_type: str = "",
     operation: str = "",
     window_minutes: int = 60,
+    anchor_ts: int = 0,
 ) -> dict:
     """Find other entities/operations with helix.error events for the same instrument
-    in the last window_minutes.
+    in a window centred on anchor_ts (the affected entity's error timestamp).
+
+    anchor_ts is Unix nanoseconds — pass the entity's error timestamp so the
+    search covers concurrent failures rather than recent ones. If omitted the
+    window falls back to now() which is only correct for live errors.
 
     For operation errors pass `operation` (e.g. "hdf5-conversion") to restrict the
     search to failures of that same operation — errors in unrelated operations or
@@ -223,13 +228,15 @@ async def query_similar_errors(
 
     import json
 
+    # Anchor the window on the entity's error time when known; fall back to now()
+    # for live errors where anchor_ts is not yet available.
+    anchor_expr = "to_timestamp($4 / 1e9)" if anchor_ts else "now()"
+
     try:
         conn = await asyncpg.connect(HERALD_DB_URL)
         try:
             if operation:
-                # For operation errors: join entity_operations to find other entities
-                # where this specific operation failed — ignore unrelated entity errors.
-                sql = """
+                sql = f"""
                     SELECT DISTINCT ee.entity_id, ee.timestamp_ns, ee.metadata
                     FROM entity_events ee
                     JOIN entity_operations eo
@@ -237,22 +244,30 @@ async def query_similar_errors(
                      AND eo.operation = $3
                     WHERE ee.instrument_id = $1
                       AND ee.event_name    = 'helix.error'
-                      AND ee.created_at   >= now() - ($2 * interval '1 minute')
+                      AND ee.created_at   >= {anchor_expr} - ($2 * interval '1 minute')
+                      AND ee.created_at   <= {anchor_expr} + interval '10 minutes'
                     ORDER BY ee.timestamp_ns DESC
                     LIMIT 50
                 """
-                rows = await conn.fetch(sql, instrument_id, window_minutes, operation)
+                args = [instrument_id, window_minutes, operation]
+                if anchor_ts:
+                    args.append(anchor_ts)
+                rows = await conn.fetch(sql, *args)
             else:
-                sql = """
+                sql = f"""
                     SELECT ee.entity_id, ee.timestamp_ns, ee.metadata
                     FROM entity_events ee
                     WHERE ee.instrument_id = $1
                       AND ee.event_name    = 'helix.error'
-                      AND ee.created_at   >= now() - ($2 * interval '1 minute')
+                      AND ee.created_at   >= {anchor_expr} - ($2 * interval '1 minute')
+                      AND ee.created_at   <= {anchor_expr} + interval '10 minutes'
                     ORDER BY ee.created_at DESC
                     LIMIT 50
                 """
-                rows = await conn.fetch(sql, instrument_id, window_minutes)
+                args = [instrument_id, window_minutes]
+                if anchor_ts:
+                    args.append(anchor_ts)
+                rows = await conn.fetch(sql, *args)
         finally:
             await conn.close()
     except Exception as exc:
@@ -359,18 +374,30 @@ DEFINITIONS = [
         "name": "query_similar_errors",
         "description": (
             "Find other entities from the same instrument that had helix.error events "
-            "in a recent time window. Use this at Level 3 to distinguish an isolated "
-            "failure from a widespread pattern (code bug vs infrastructure). "
-            "For operation errors (hdf5-conversion, replication, registration) always "
-            "pass the `operation` name so the search is scoped to that specific operation "
-            "— errors in unrelated operations or distant DAG ancestors are not relevant."
+            "in a window centred on anchor_ts (the affected entity's error timestamp). "
+            "Use this to distinguish an isolated failure from a widespread pattern "
+            "(code bug vs infrastructure). Always pass anchor_ts from the entity's "
+            "error event so you search concurrent failures, not recent ones. "
+            "For operation errors always pass `operation` to scope the search."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "instrument_id": {
                     "type": "string",
-                    "description": "Instrument identifier (e.g. 'CHIME')",
+                    "description": "Instrument identifier (e.g. 'CHIMEFRB')",
+                },
+                "anchor_ts": {
+                    "type": "integer",
+                    "description": (
+                        "Unix nanoseconds of the affected entity's error event — anchors the "
+                        "search window to the time when this error occurred. Always pass this "
+                        "from query_entity_events so concurrent failures are found, not recent ones."
+                    ),
+                },
+                "window_minutes": {
+                    "type": "integer",
+                    "description": "Width of the search window in minutes before anchor_ts (default 60)",
                 },
                 "operation": {
                     "type": "string",
@@ -382,10 +409,6 @@ DEFINITIONS = [
                 "error_type": {
                     "type": "string",
                     "description": "Error type string to filter by (e.g. 'CLASSIFIER_TIMEOUT'). Leave empty to return all errors.",
-                },
-                "window_minutes": {
-                    "type": "integer",
-                    "description": "How far back to search in minutes (default 60)",
                 },
             },
             "required": ["instrument_id"],
