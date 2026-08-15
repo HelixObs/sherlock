@@ -16,7 +16,11 @@ dependencies = [
     "anthropic>=0.30",
     "asyncpg>=0.29",
     "prometheus-client>=0.20",
+    "slack-bolt>=1.20",
 ]
+
+[project.scripts]
+bot = "sherlock.bot:main"
 
 [project.optional-dependencies]
 dev = [
