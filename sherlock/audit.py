@@ -40,6 +40,7 @@ async def write(
     cost_usd: float,
     latency_ms: int,
     filter_hit: bool = False,
+    channel: str = "",
 ) -> None:
     """Append one exchange. Never raises — a logging failure must not fail
     the investigation that produced it."""
@@ -55,13 +56,14 @@ async def write(
             await conn.execute(
                 """
                 INSERT INTO sherlock_audit
-                    (session_id, interface, operator_id, operator_name,
+                    (session_id, interface, operator_id, operator_name, channel,
                      instrument_id, entity_id, profile, kb_version,
                      question, response, tools_used, model, cost_usd,
                      latency_ms, filter_hit)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                 """,
                 session_id, interface, operator_id or "unknown", operator_name,
+                channel or None,
                 instrument_id or None, entity_id or None,
                 os.environ.get("SHERLOCK_PROFILE", "full"), None,
                 question, response, tools_used, model, cost_usd, latency_ms,
@@ -76,11 +78,22 @@ async def write(
 async def get_all(
     instrument_id: str = "",
     operator_id: str = "",
-    flagged_only: bool = False,
+    operator_name: str = "",
+    channel: str = "",
+    since: str = "",
+    until: str = "",
     limit: int = 100,
     offset: int = 0,
 ) -> list[AuditEntry]:
-    """Paginated, filterable read for GET /audit."""
+    """Paginated, filterable read for GET /audit.
+
+    operator_name is a case-insensitive partial match (ILIKE) — nobody
+    filters by the raw Slack operator_id in practice, per the actual
+    feedback this was built from. since/until are ISO8601 timestamps,
+    passed through as NULL rather than '' when unset: casting an empty
+    string to timestamptz would error regardless of whether the OR
+    short-circuits, since Postgres type-checks the expression either way.
+    """
     if not DB_URL:
         return []
     try:
@@ -95,17 +108,22 @@ async def get_all(
             rows = await conn.fetch(
                 """
                 SELECT id, ts, session_id, interface, operator_id, operator_name,
-                       instrument_id, entity_id, profile, kb_version, question,
-                       response, tools_used, model, cost_usd, latency_ms,
-                       filter_hit, flagged, flag_reason
+                       channel, instrument_id, entity_id, profile, kb_version,
+                       question, response, tools_used, model, cost_usd,
+                       latency_ms, filter_hit
                 FROM sherlock_audit
                 WHERE ($1 = '' OR instrument_id = $1)
                   AND ($2 = '' OR operator_id = $2)
-                  AND (NOT $3 OR flagged = TRUE)
+                  AND ($3 = '' OR operator_name ILIKE '%' || $3 || '%')
+                  AND ($4 = '' OR channel = $4)
+                  AND ($5::timestamptz IS NULL OR ts >= $5::timestamptz)
+                  AND ($6::timestamptz IS NULL OR ts <= $6::timestamptz)
                 ORDER BY ts DESC
-                LIMIT $4 OFFSET $5
+                LIMIT $7 OFFSET $8
                 """,
-                instrument_id, operator_id, flagged_only, limit, offset,
+                instrument_id, operator_id, operator_name, channel,
+                since or None, until or None,
+                limit, offset,
             )
         finally:
             await conn.close()
@@ -121,6 +139,7 @@ async def get_all(
             interface=row["interface"],
             operator_id=row["operator_id"],
             operator_name=row["operator_name"] or "",
+            channel=row["channel"] or "",
             instrument_id=row["instrument_id"] or "",
             entity_id=row["entity_id"] or "",
             profile=row["profile"],
@@ -132,33 +151,6 @@ async def get_all(
             cost_usd=float(row["cost_usd"]),
             latency_ms=row["latency_ms"],
             filter_hit=row["filter_hit"],
-            flagged=row["flagged"],
-            flag_reason=row["flag_reason"] or "",
         )
         for row in rows
     ]
-
-
-async def flag(entry_id: str, reason: str) -> bool:
-    """Mark an exchange as wrong/misleading. Returns False if not found."""
-    if not DB_URL:
-        return False
-    try:
-        import asyncpg
-    except ImportError:
-        return False
-    try:
-        conn = await asyncpg.connect(DB_URL)
-        try:
-            result = await conn.execute(
-                "UPDATE sherlock_audit SET flagged = TRUE, flag_reason = $2 WHERE id = $1",
-                entry_id, reason,
-            )
-        finally:
-            await conn.close()
-    except Exception:
-        log.exception("audit.flag failed")
-        return False
-
-    # asyncpg's execute() returns a status string like "UPDATE 1" or "UPDATE 0".
-    return result.endswith(" 0") is False

@@ -77,6 +77,7 @@ async def run(
     question: str = "",
     operator_id: str = "",
     operator_name: str = "",
+    channel: str = "",
 ) -> AsyncGenerator[DiagnoseChunk, None]:
     """Run or continue the investigation for session.entity_id.
 
@@ -115,7 +116,7 @@ async def run(
         yield _done_chunk(session, successful=False)
         await audit.write(
             session_id=session.id, interface=session.interface,
-            operator_id=operator_id, operator_name=operator_name,
+            operator_id=operator_id, operator_name=operator_name, channel=channel,
             instrument_id=session.instrument_id, entity_id=session.entity_id,
             question=question, response=f"error: {exc}", tools_used=[],
             model=MODEL, cost_usd=0.0, latency_ms=0,
@@ -243,7 +244,7 @@ async def run(
                 response_text = f"{summary} {recommendation}".strip()
                 await _persist_audit(
                     session, question, response_text, tools_used,
-                    operator_id, operator_name, investigation_start, filter_hit,
+                    operator_id, operator_name, investigation_start, filter_hit, channel,
                 )
                 yield done
                 return
@@ -271,7 +272,7 @@ async def run(
                 # checkpoints, and out of scope for this guardrail deliberately.
                 await _persist_audit(
                     session, question, tu.input.get("question", ""), tools_used,
-                    operator_id, operator_name, investigation_start, False,
+                    operator_id, operator_name, investigation_start, False, channel,
                 )
                 return
 
@@ -335,7 +336,7 @@ async def run(
     await sessions.save(session)
     await _persist_audit(
         session, question, sanitized_text, tools_used,
-        operator_id, operator_name, investigation_start, filter_hit,
+        operator_id, operator_name, investigation_start, filter_hit, channel,
     )
     yield _done_chunk(session, successful=False)
 
@@ -349,6 +350,7 @@ async def _persist_audit(
     operator_name: str,
     start: float,
     filter_hit: bool = False,
+    channel: str = "",
 ) -> None:
     cost = _estimate_cost(MODEL, session.input_tokens, session.output_tokens)
     duration_ms = int((_time.monotonic() - start) * 1000)
@@ -357,6 +359,7 @@ async def _persist_audit(
         interface=session.interface,
         operator_id=operator_id,
         operator_name=operator_name,
+        channel=channel,
         instrument_id=session.instrument_id,
         entity_id=session.entity_id,
         question=question,

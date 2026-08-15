@@ -56,12 +56,15 @@ class DiagnoseRequest(BaseModel):
     interface: str = "web"   # "web" | "slack"
     operator_id: str = ""    # logged to sherlock_audit against this exchange
     operator_name: str = ""
+    channel: str = ""        # Slack channel name (e.g. "#chime-ops"), resolved
+                              # by bot.py — empty for web
 
 
 class ReplyRequest(BaseModel):
     content: str
     operator_id: str = ""    # logged to sherlock_audit against this exchange
     operator_name: str = ""
+    channel: str = ""
 
 
 class ChatRequest(BaseModel):
@@ -76,6 +79,7 @@ class ChatRequest(BaseModel):
                                     # cumulative. Unused (append/seed) for web.
     operator_id: str = ""    # logged to sherlock_audit against this exchange
     operator_name: str = ""
+    channel: str = ""
 
 
 class HypothesisData(BaseModel):
@@ -116,6 +120,7 @@ class AuditEntry(BaseModel):
     interface: str = "web"
     operator_id: str = "unknown"
     operator_name: str = ""
+    channel: str = ""
     instrument_id: str = ""
     entity_id: str = ""
     profile: str = "full"    # 'kb_only' | 'full' — capability profiles not yet built
@@ -126,10 +131,4 @@ class AuditEntry(BaseModel):
     model: str = ""
     cost_usd: float = 0.0
     latency_ms: int = 0
-    filter_hit: bool = False  # output guardrail fired — guardrail.py not yet built
-    flagged: bool = False
-    flag_reason: str = ""
-
-
-class FlagRequest(BaseModel):
-    reason: str = ""
+    filter_hit: bool = False  # deterministic guardrail redacted something in this response

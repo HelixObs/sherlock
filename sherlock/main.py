@@ -15,7 +15,6 @@ from sherlock.models import (
     ChatRequest,
     DiagnoseChunk,
     DiagnoseRequest,
-    FlagRequest,
     MemoryEntry,
     ReplyRequest,
 )
@@ -64,14 +63,14 @@ async def diagnose(entity_id: str, body: DiagnoseRequest) -> StreamingResponse:
         prior = await mem.load_for_entity(entity_id)
         if prior:
             return StreamingResponse(
-                _stream_from_memory(session, prior, question, body.operator_id, body.operator_name),
+                _stream_from_memory(session, prior, question, body.operator_id, body.operator_name, body.channel),
                 media_type="application/x-ndjson",
             )
 
     return StreamingResponse(
         _stream(
             session, instrument_ctx, agent_docs, question,
-            body.operator_id, body.operator_name,
+            body.operator_id, body.operator_name, body.channel,
             session_id_in_first_chunk=session.id,
         ),
         media_type="application/x-ndjson",
@@ -81,7 +80,7 @@ async def diagnose(entity_id: str, body: DiagnoseRequest) -> StreamingResponse:
 @app.post("/diagnose/{session_id}/reply")
 async def reply(session_id: str, body: ReplyRequest) -> StreamingResponse:
     """Continue an existing investigation with an operator reply."""
-    return await _reply(session_id, body.content, body.operator_id, body.operator_name)
+    return await _reply(session_id, body.content, body.operator_id, body.operator_name, body.channel)
 
 
 # ── Chat ──────────────────────────────────────────────────────────────────────
@@ -134,7 +133,7 @@ async def chat(body: ChatRequest) -> StreamingResponse:
     return StreamingResponse(
         _stream(
             session, instrument_ctx, agent_docs, body.message,
-            body.operator_id, body.operator_name,
+            body.operator_id, body.operator_name, body.channel,
             session_id_in_first_chunk=session.id,
         ),
         media_type="application/x-ndjson",
@@ -149,10 +148,13 @@ async def chat_reply(session_id: str, body: ReplyRequest) -> StreamingResponse:
     sessions differ only in how they were seeded, not in how a reply is
     handled, so both routes share _reply().
     """
-    return await _reply(session_id, body.content, body.operator_id, body.operator_name)
+    return await _reply(session_id, body.content, body.operator_id, body.operator_name, body.channel)
 
 
-async def _reply(session_id: str, content: str, operator_id: str = "", operator_name: str = "") -> StreamingResponse:
+async def _reply(
+    session_id: str, content: str,
+    operator_id: str = "", operator_name: str = "", channel: str = "",
+) -> StreamingResponse:
     session = await sessions.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found or expired")
@@ -165,7 +167,7 @@ async def _reply(session_id: str, content: str, operator_id: str = "", operator_
     agent_docs = await context.fetch_agent_docs(instrument_ctx) if instrument_ctx else []
 
     return StreamingResponse(
-        _stream(session, instrument_ctx, agent_docs, content, operator_id, operator_name),
+        _stream(session, instrument_ctx, agent_docs, content, operator_id, operator_name, channel),
         media_type="application/x-ndjson",
     )
 
@@ -190,22 +192,23 @@ async def delete_memory(memory_id: str) -> None:
 async def get_audit(
     instrument_id: str = "",
     operator_id: str = "",
-    flagged_only: bool = False,
+    operator_name: str = "",
+    channel: str = "",
+    since: str = "",
+    until: str = "",
     limit: int = 100,
     offset: int = 0,
 ) -> list[AuditEntry]:
     """Paginated, filterable audit log. Write-only from Sherlock's own
     perspective — this endpoint is for human review, never called by the
-    agent loop itself."""
-    return await audit.get_all(instrument_id, operator_id, flagged_only, limit, offset)
+    agent loop itself.
 
-
-@app.post("/audit/{entry_id}/flag", status_code=204)
-async def flag_audit(entry_id: str, body: FlagRequest) -> None:
-    """Mark an exchange as wrong/misleading, with an optional note."""
-    ok = await audit.flag(entry_id, body.reason)
-    if not ok:
-        raise HTTPException(status_code=404, detail="audit entry not found")
+    operator_name is a partial, case-insensitive match — filtering by the
+    raw operator_id isn't something anyone can actually do without looking
+    it up first. since/until are ISO8601 timestamps."""
+    return await audit.get_all(
+        instrument_id, operator_id, operator_name, channel, since, until, limit, offset,
+    )
 
 
 # ── Streaming helpers ─────────────────────────────────────────────────────────
@@ -216,6 +219,7 @@ async def _stream_from_memory(
     question: str = "",
     operator_id: str = "",
     operator_name: str = "",
+    channel: str = "",
 ) -> AsyncGenerator[bytes, None]:
     """Replay a prior investigation from memory without calling the API."""
     from sherlock.models import HypothesisData
@@ -272,7 +276,7 @@ async def _stream_from_memory(
 
     await audit.write(
         session_id=session.id, interface=session.interface,
-        operator_id=operator_id, operator_name=operator_name,
+        operator_id=operator_id, operator_name=operator_name, channel=channel,
         instrument_id=session.instrument_id, entity_id=session.entity_id,
         question=question, response=prior.summary, tools_used=[],
         model="memory", cost_usd=0.0, latency_ms=0,
@@ -290,6 +294,7 @@ async def _stream(
     question: str = "",
     operator_id: str = "",
     operator_name: str = "",
+    channel: str = "",
     session_id_in_first_chunk: str = "",
 ) -> AsyncGenerator[bytes, None]:
     if session_id_in_first_chunk:
@@ -304,7 +309,7 @@ async def _stream(
         ))
 
     try:
-        async for chunk in agent.run(session, instrument_ctx, agent_docs, question, operator_id, operator_name):
+        async for chunk in agent.run(session, instrument_ctx, agent_docs, question, operator_id, operator_name, channel):
             yield _encode(chunk)
     except Exception as exc:
         log.exception("agent error")
@@ -312,7 +317,7 @@ async def _stream(
         yield _encode(DiagnoseChunk(type="done", text=""))
         await audit.write(
             session_id=session.id, interface=session.interface,
-            operator_id=operator_id, operator_name=operator_name,
+            operator_id=operator_id, operator_name=operator_name, channel=channel,
             instrument_id=session.instrument_id, entity_id=session.entity_id,
             question=question, response=f"error: {exc}", tools_used=[],
             model="", cost_usd=0.0, latency_ms=0,

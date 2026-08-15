@@ -60,6 +60,7 @@ _ENTITY_ID_RE = re.compile(r"\b[a-z][a-z0-9]*-[0-9a-f]{6,}\b", re.IGNORECASE)
 _DEDUP_TTL = 600
 _seen_events: dict[str, float] = {}
 _name_cache: dict[str, str] = {}
+_channel_name_cache: dict[str, str] = {}
 
 app = AsyncApp(token=SLACK_BOT_TOKEN)
 
@@ -139,12 +140,13 @@ async def _handle(event: dict, client, is_dm: bool) -> None:
         transcript = f"{speaker}: {text}"
 
     operator_name = await _resolve_display_name(client, user)
+    channel_name = await _resolve_channel_name(client, channel)
 
     try:
         if entity_id:
-            chunks = _call_diagnose(entity_id, session_id, user, operator_name)
+            chunks = _call_diagnose(entity_id, session_id, user, operator_name, channel_name)
         else:
-            chunks = _call_chat(transcript, session_id, user, operator_name)
+            chunks = _call_chat(transcript, session_id, user, operator_name, channel_name)
         await _stream_to_slack(client, channel, reply_ts, chunks)
     except Exception:
         log.exception("sherlock call failed")
@@ -202,6 +204,28 @@ async def _resolve_display_name(client, user_id: str) -> str:
     return name
 
 
+async def _resolve_channel_name(client, channel_id: str) -> str:
+    """Human-readable channel name (e.g. "#chime-ops"), not the raw Slack
+    channel ID — cached the same way _resolve_display_name is."""
+    if not channel_id:
+        return ""
+    if channel_id in _channel_name_cache:
+        return _channel_name_cache[channel_id]
+    try:
+        resp = await client.conversations_info(channel=channel_id)
+        ch = resp.get("channel", {})
+        if ch.get("name"):
+            name = f"#{ch['name']}"
+        elif ch.get("is_im"):
+            name = "DM"
+        else:
+            name = channel_id
+    except SlackApiError:
+        name = channel_id  # best-effort — a raw ID is still usable context
+    _channel_name_cache[channel_id] = name
+    return name
+
+
 def _detect_entity_id(text: str) -> str:
     m = _ENTITY_ID_RE.search(text)
     return m.group(0) if m else ""
@@ -209,7 +233,7 @@ def _detect_entity_id(text: str) -> str:
 
 # ── Sherlock HTTP calls ──────────────────────────────────────────────────────
 
-async def _call_chat(transcript: str, session_id: str, operator_id: str, operator_name: str):
+async def _call_chat(transcript: str, session_id: str, operator_id: str, operator_name: str, channel: str):
     payload = {
         "message": transcript,
         "session_id": session_id,
@@ -218,6 +242,7 @@ async def _call_chat(transcript: str, session_id: str, operator_id: str, operato
         "instrument_id": DEFAULT_INSTRUMENT_ID,
         "operator_id": operator_id,
         "operator_name": operator_name,
+        "channel": channel,
     }
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         async with client.stream("POST", f"{SHERLOCK_API_URL}/chat", json=payload) as r:
@@ -226,13 +251,14 @@ async def _call_chat(transcript: str, session_id: str, operator_id: str, operato
                     yield json.loads(line)
 
 
-async def _call_diagnose(entity_id: str, session_id: str, operator_id: str, operator_name: str):
+async def _call_diagnose(entity_id: str, session_id: str, operator_id: str, operator_name: str, channel: str):
     payload = {
         "session_id": session_id,
         "interface": "slack",
         "instrument_id": DEFAULT_INSTRUMENT_ID,
         "operator_id": operator_id,
         "operator_name": operator_name,
+        "channel": channel,
     }
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         async with client.stream(
