@@ -34,6 +34,15 @@ MODEL      = os.environ.get("SHERLOCK_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS = 4096
 MAX_TURNS  = 10
 
+# Falls back into the audit log's instrument_id when a session carries none
+# (e.g. general chat with no entity in play) — this deployment only ever
+# serves one instrument, so untargeted exchanges are still that
+# instrument's audit trail. Deliberately NOT used for session.instrument_id
+# itself, which stays empty for general chat so context.load()/mem.load()
+# don't pull in instrument-specific context for questions that never asked
+# for it.
+INSTRUMENT = os.environ.get("INSTRUMENT", "")
+
 # Pricing per million tokens (USD). Update if model changes.
 _PRICING: dict[str, tuple[float, float]] = {
     # model-id: (input $/1M, output $/1M)
@@ -360,7 +369,7 @@ async def _persist_audit(
         operator_id=operator_id,
         operator_name=operator_name,
         channel=channel,
-        instrument_id=session.instrument_id,
+        instrument_id=session.instrument_id or INSTRUMENT,
         entity_id=session.entity_id,
         question=question,
         response=response_text,
