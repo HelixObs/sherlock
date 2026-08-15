@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime
 
 from sherlock.models import AuditEntry
 
@@ -89,10 +90,15 @@ async def get_all(
 
     operator_name is a case-insensitive partial match (ILIKE) — nobody
     filters by the raw Slack operator_id in practice, per the actual
-    feedback this was built from. since/until are ISO8601 timestamps,
-    passed through as NULL rather than '' when unset: casting an empty
-    string to timestamptz would error regardless of whether the OR
-    short-circuits, since Postgres type-checks the expression either way.
+    feedback this was built from. since/until arrive as ISO8601 strings
+    and must be parsed to datetime before binding: asyncpg encodes
+    timestamptz parameters client-side via its own codec, which requires
+    an actual datetime object — a raw str fails there even though the
+    query casts the parameter with ::timestamptz (that cast only tells
+    Postgres how to type-check the expression, it doesn't make asyncpg
+    parse the string first). Passed through as NULL rather than '' when
+    unset, since casting an empty string would error regardless of OR
+    short-circuiting.
     """
     if not DB_URL:
         return []
@@ -100,6 +106,17 @@ async def get_all(
         import asyncpg
     except ImportError:
         return []
+
+    def _parse_ts(s: str) -> datetime | None:
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    since_dt = _parse_ts(since)
+    until_dt = _parse_ts(until)
 
     limit = max(1, min(limit, _PAGE_MAX))
     try:
@@ -122,7 +139,7 @@ async def get_all(
                 LIMIT $7 OFFSET $8
                 """,
                 instrument_id, operator_id, operator_name, channel,
-                since or None, until or None,
+                since_dt, until_dt,
                 limit, offset,
             )
         finally:
