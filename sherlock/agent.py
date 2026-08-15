@@ -248,7 +248,7 @@ async def run(
                     except Exception:
                         log.exception("failed to save memory")
                 done = _done_chunk(session, successful=True)
-                await _persist_usage(session, tool_call_count, investigation_start, successful=True)
+                await _persist_usage(session, tool_call_count, investigation_start, reached_hypothesis=True)
                 await sessions.save(session)
                 response_text = f"{summary} {recommendation}".strip()
                 await _persist_audit(
@@ -273,7 +273,7 @@ async def run(
                 })
                 session.history.append({"role": "user", "content": tool_results})
                 # Persist partial usage so sherlock_usage always has a record.
-                await _persist_usage(session, tool_call_count, investigation_start, successful=False)
+                await _persist_usage(session, tool_call_count, investigation_start, reached_hypothesis=False)
                 # Durable now — a reply hours or days later resumes this exact state.
                 await sessions.save(session)
                 # Not sanitized: this is Sherlock asking the operator something,
@@ -341,7 +341,7 @@ async def run(
     if sanitized_text:
         yield DiagnoseChunk(type="step", text=sanitized_text)
 
-    await _persist_usage(session, tool_call_count, investigation_start, successful=False)
+    await _persist_usage(session, tool_call_count, investigation_start, reached_hypothesis=False)
     await sessions.save(session)
     await _persist_audit(
         session, question, sanitized_text, tools_used,
@@ -385,7 +385,7 @@ async def _persist_usage(
     session: Session,
     tool_call_count: int,
     start: float,
-    successful: bool,
+    reached_hypothesis: bool,
 ) -> None:
     cost = _estimate_cost(MODEL, session.input_tokens, session.output_tokens)
     duration_ms = int((_time.monotonic() - start) * 1000)
@@ -399,7 +399,7 @@ async def _persist_usage(
         cost_usd=cost,
         duration_ms=duration_ms,
         tool_call_count=tool_call_count,
-        successful=successful,
+        reached_hypothesis=reached_hypothesis,
     )
 
 

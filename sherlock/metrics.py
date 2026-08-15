@@ -127,11 +127,11 @@ async def record_usage(
     cost_usd: float,
     duration_ms: int,
     tool_call_count: int,
-    successful: bool,
+    reached_hypothesis: bool,
     query_type: str = "diagnosis",
 ) -> None:
     """Write one row to sherlock_usage and update Prometheus counters."""
-    status = "success" if successful else "failed"
+    status = "success" if reached_hypothesis else "failed"
     queries_total.labels(query_type=query_type, status=status).inc()
     query_duration_seconds.labels(query_type=query_type).observe(duration_ms / 1000)
     tokens_input_total.labels(model=model).inc(tokens_input)
@@ -151,12 +151,12 @@ async def record_usage(
                 INSERT INTO sherlock_usage
                     (session_id, instrument_id, entity_id, model,
                      tokens_input, tokens_output, cost_usd,
-                     duration_ms, tool_calls, successful)
+                     duration_ms, tool_calls, reached_hypothesis)
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
                 """,
                 session_id, instrument_id, entity_id, model,
                 tokens_input, tokens_output, cost_usd,
-                duration_ms, tool_call_count, successful,
+                duration_ms, tool_call_count, reached_hypothesis,
             )
         finally:
             await conn.close()
