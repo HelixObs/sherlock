@@ -199,6 +199,7 @@ async def _resolve_display_name(client, user_id: str) -> str:
             or user_id
         )
     except SlackApiError:
+        log.warning("users_info failed for %s — falling back to raw ID", user_id, exc_info=True)
         name = user_id  # best-effort — a raw ID is still usable context
     _name_cache[user_id] = name
     return name
@@ -221,6 +222,7 @@ async def _resolve_channel_name(client, channel_id: str) -> str:
         else:
             name = channel_id
     except SlackApiError:
+        log.warning("conversations_info failed for %s — falling back to raw ID", channel_id, exc_info=True)
         name = channel_id  # best-effort — a raw ID is still usable context
     _channel_name_cache[channel_id] = name
     return name
