@@ -294,6 +294,7 @@ async def _stream_to_slack(client, channel: str, ts: str, chunks) -> None:
     narration_parts: list[str] = []
     tools_called: list[str] = []
     final_text = ""
+    hypothesis_chunk: dict | None = None
 
     async for chunk in chunks:
         ctype = chunk.get("type")
@@ -312,7 +313,8 @@ async def _stream_to_slack(client, channel: str, ts: str, chunks) -> None:
         elif ctype == "question":
             final_text = chunk.get("text", "")
         elif ctype == "hypothesis":
-            final_text = _format_hypothesis(chunk)
+            hypothesis_chunk = chunk
+            final_text = _format_hypothesis(chunk)  # plain-text fallback only
         elif ctype == "error":
             final_text = f"Something went wrong: {chunk.get('text', 'unknown error')}"
 
@@ -327,7 +329,11 @@ async def _stream_to_slack(client, channel: str, ts: str, chunks) -> None:
             "type": "context",
             "elements": [{"type": "mrkdwn", "text": f"🔍 Checked: {checked}"}],
         })
-    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": final_text}})
+
+    if hypothesis_chunk is not None:
+        blocks.extend(_hypothesis_blocks(hypothesis_chunk))
+    else:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": final_text}})
 
     # text is the required fallback (notifications, screen readers, clients
     # that don't render blocks) — blocks is what actually displays.
@@ -335,6 +341,8 @@ async def _stream_to_slack(client, channel: str, ts: str, chunks) -> None:
 
 
 def _format_hypothesis(chunk: dict) -> str:
+    """Plain-text fallback for the required text= parameter — not what
+    actually displays when blocks render; see _hypothesis_blocks."""
     d = chunk.get("data", {})
     parts = [
         f"*{d.get('classification', 'unknown')}* ({d.get('confidence', 'low')} confidence)",
@@ -343,6 +351,28 @@ def _format_hypothesis(chunk: dict) -> str:
     if d.get("recommendation"):
         parts.append(f"→ {d['recommendation']}")
     return "\n".join(p for p in parts if p)
+
+
+def _hypothesis_blocks(chunk: dict) -> list[dict]:
+    """Classification/confidence as Block Kit fields (a real, underused
+    Block Kit feature — short key/value pairs shown side by side) rather
+    than folding everything into one plain-text paragraph. Summary and
+    recommendation stay as prose, since they're not short key/value data."""
+    d = chunk.get("data", {})
+    blocks = [{
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": _to_slack_mrkdwn(d.get("summary", ""))},
+        "fields": [
+            {"type": "mrkdwn", "text": f"*Classification*\n{d.get('classification', 'unknown')}"},
+            {"type": "mrkdwn", "text": f"*Confidence*\n{d.get('confidence', 'low')}"},
+        ],
+    }]
+    if d.get("recommendation"):
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Recommendation*\n{_to_slack_mrkdwn(d['recommendation'])}"},
+        })
+    return blocks
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
