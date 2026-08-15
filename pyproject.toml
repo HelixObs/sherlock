@@ -17,6 +17,7 @@ dependencies = [
     "asyncpg>=0.29",
     "prometheus-client>=0.20",
     "slack-bolt>=1.20",
+    "aiohttp>=3.9",
 ]
 
 [project.scripts]
