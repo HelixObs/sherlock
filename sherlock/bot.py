@@ -221,6 +221,7 @@ async def _resolve_channel_name(client, channel_id: str) -> str:
             name = "DM"
         else:
             name = channel_id
+            log.warning("conversations_info returned no name/is_im for %s — raw response: %s", channel_id, ch)
     except SlackApiError:
         log.warning("conversations_info failed for %s — falling back to raw ID", channel_id, exc_info=True)
         name = channel_id  # best-effort — a raw ID is still usable context
