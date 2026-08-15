@@ -19,6 +19,7 @@ it if needed, since it isn't part of the conversational state.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -48,6 +49,28 @@ class Session:
 
 
 _store: dict[str, Session] = {}
+_locks: dict[str, asyncio.Lock] = {}
+
+
+def lock_for(session_id: str) -> asyncio.Lock:
+    """Per-session lock serializing concurrent turns against the same id.
+
+    Two operators messaging the same Slack thread within the same few
+    seconds both resolve to the same session_id, and without this they'd
+    share the same in-memory Session object with no isolation: session
+    mutation spans multiple `await` points (the Anthropic call chief among
+    them), so one request's history replacement/append can be silently
+    clobbered mid-flight by the other. Callers hold this for the full turn
+    — from before session.history is first touched through the final
+    sessions.save() — not just around a single store operation. Different
+    session_ids never contend; this only serializes a session against
+    itself.
+    """
+    lock = _locks.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _locks[session_id] = lock
+    return lock
 
 
 async def get_or_create(
