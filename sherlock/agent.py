@@ -151,6 +151,8 @@ async def run(
         # applies uniformly rather than only to a turn we could've
         # predicted in advance. See helixobs/SHERLOCK_PLATFORM_DESIGN.md's
         # guardrail section.
+        turn_start = _time.monotonic()
+        first_token_at = None
         async with client.messages.stream(
             model=MODEL,
             system=system,
@@ -159,6 +161,13 @@ async def run(
             max_tokens=MAX_TOKENS,
         ) as stream:
             async for event in stream:
+                # content_block_start fires for the first block of any kind
+                # — text or tool_use — so a turn that goes straight to a
+                # tool call with no narration still gets a TTFB sample.
+                # content_block_delta alone would miss that case, since it
+                # only checked for a .text attribute.
+                if first_token_at is None and event.type == "content_block_start":
+                    first_token_at = _time.monotonic()
                 if (
                     event.type == "content_block_delta"
                     and hasattr(event.delta, "text")
@@ -166,6 +175,9 @@ async def run(
                     full_text += event.delta.text
 
             final = await stream.get_final_message()
+
+        if first_token_at is not None:
+            mtx.ttfb_seconds.labels(model=MODEL).observe(first_token_at - turn_start)
 
         # Accumulate token usage for cost estimate.
         if final.usage:

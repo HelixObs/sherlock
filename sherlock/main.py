@@ -159,7 +159,7 @@ async def chat(body: ChatRequest) -> StreamingResponse:
             _stream(
                 session, instrument_ctx, agent_docs, body.message,
                 body.operator_id, body.operator_name, body.channel,
-                session_id_in_first_chunk=session.id, lock=lock,
+                session_id_in_first_chunk=session.id, lock=lock, query_type="chat",
             ),
             media_type="application/x-ndjson",
         )
@@ -182,6 +182,7 @@ async def chat_reply(session_id: str, body: ReplyRequest) -> StreamingResponse:
 async def _reply(
     session_id: str, content: str,
     operator_id: str = "", operator_name: str = "", channel: str = "",
+    query_type: str = "reply",
 ) -> StreamingResponse:
     session = await sessions.get(session_id)
     if session is None:
@@ -203,7 +204,7 @@ async def _reply(
         agent_docs = await context.fetch_agent_docs(instrument_ctx) if instrument_ctx else []
 
         return StreamingResponse(
-            _stream(session, instrument_ctx, agent_docs, content, operator_id, operator_name, channel, lock=lock),
+            _stream(session, instrument_ctx, agent_docs, content, operator_id, operator_name, channel, lock=lock, query_type=query_type),
             media_type="application/x-ndjson",
         )
     except Exception:
@@ -260,10 +261,12 @@ async def _stream_from_memory(
     operator_name: str = "",
     channel: str = "",
     lock: asyncio.Lock | None = None,
+    query_type: str = "diagnosis",
 ) -> AsyncGenerator[bytes, None]:
     """Replay a prior investigation from memory without calling the API."""
     from sherlock.models import HypothesisData
 
+    mtx.inflight_requests.labels(query_type=query_type).inc()
     try:
         age_days = ""
         if prior.created_at:
@@ -323,6 +326,7 @@ async def _stream_from_memory(
             model="memory", cost_usd=0.0, latency_ms=0,
         )
     finally:
+        mtx.inflight_requests.labels(query_type=query_type).dec()
         if lock is not None and lock.locked():
             lock.release()
 
@@ -341,7 +345,9 @@ async def _stream(
     channel: str = "",
     session_id_in_first_chunk: str = "",
     lock: asyncio.Lock | None = None,
+    query_type: str = "diagnosis",
 ) -> AsyncGenerator[bytes, None]:
+    mtx.inflight_requests.labels(query_type=query_type).inc()
     try:
         if session_id_in_first_chunk:
             text = (
@@ -369,6 +375,7 @@ async def _stream(
                 model="", cost_usd=0.0, latency_ms=0,
             )
     finally:
+        mtx.inflight_requests.labels(query_type=query_type).dec()
         if lock is not None and lock.locked():
             lock.release()
 

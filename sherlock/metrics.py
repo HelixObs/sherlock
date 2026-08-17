@@ -13,6 +13,7 @@ import time as _time
 
 from prometheus_client import (
     Counter,
+    Gauge,
     Histogram,
     start_http_server,
 )
@@ -81,8 +82,28 @@ tool_call_duration_seconds = Histogram(
     buckets=[0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
 )
 
+inflight_requests = Gauge(
+    "sherlock_inflight_requests",
+    "Requests currently being processed, from request start to stream "
+    "completion — includes session setup, lock wait, model calls, tool "
+    "execution, and guardrail sanitization for the whole turn.",
+    ["query_type"],
+)
+
+ttfb_seconds = Histogram(
+    "sherlock_ttfb_seconds",
+    "Time from an Anthropic API call starting to its first content token "
+    "arriving. Measured per model call (so a multi-turn tool-calling "
+    "investigation contributes one sample per turn), isolating actual "
+    "model 'thinking' latency from session setup, tool execution, and "
+    "guardrail sanitization — none of which happen before this fires.",
+    ["model"],
+    buckets=[0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30],
+)
+
 
 _QUERY_TYPES = ["diagnosis", "reply"]
+_INFLIGHT_QUERY_TYPES = ["diagnosis", "chat", "reply"]
 _STATUSES = ["success", "failed"]
 _MODELS = ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001", "memory"]
 
@@ -97,12 +118,15 @@ def _init_label_combinations() -> None:
         for st in _STATUSES:
             queries_total.labels(query_type=qt, status=st)
         query_duration_seconds.labels(query_type=qt)
+    for qt in _INFLIGHT_QUERY_TYPES:
+        inflight_requests.labels(query_type=qt).set(0)
     for model in _MODELS:
         tokens_input_total.labels(model=model)
         tokens_output_total.labels(model=model)
         tokens_total.labels(model=model)
         cost_usd_total.labels(model=model)
         cost_per_query_usd.labels(model=model)
+        ttfb_seconds.labels(model=model)
 
 
 def start_metrics_server() -> None:
