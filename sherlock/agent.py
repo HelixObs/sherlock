@@ -32,7 +32,15 @@ log = logging.getLogger(__name__)
 
 MODEL      = os.environ.get("SHERLOCK_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS = 4096
-MAX_TURNS  = 10
+# Caps internal back-and-forth (model turn -> tool calls -> model turn...) for
+# a single question, not a whole conversation — main.py resets
+# session.turn_count to 0 at the start of every fresh question (chat or
+# reply), so a long-running thread never inherits an earlier question's
+# spent budget. This is a runaway-loop safety valve, not a cost control: a
+# well-investigated single answer can legitimately spend several tool calls
+# (a search_kb miss + re-query + a couple of follow-ups is normal), so this
+# is set generous on purpose.
+MAX_TURNS  = 25
 
 # Falls back into the audit log's instrument_id when a session carries none
 # (e.g. general chat with no entity in play) — this deployment only ever

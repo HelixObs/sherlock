@@ -1,0 +1,341 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Sherlock (local)</title>
+<!--
+  A no-build local chat UI for testing sherlock's /chat endpoint by hand —
+  open this file directly in a browser (file://), no server needed for the
+  page itself. Requires the API it's talking to be running with
+  SHERLOCK_DEV_CORS=1 (see main.py) — that flag must never be set outside
+  your own machine.
+
+  Defaults to http://localhost:8082; override with ?api=http://host:port,
+  which is remembered in localStorage for next time.
+-->
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-hover: #f8f8f8;
+    --text: #1d1c1d;
+    --text-muted: #616061;
+    --link: #1264a3;
+    --divider: #dddddd;
+    --badge-bg: #e8e8e8;
+    --badge-text: #616061;
+    --code-bg: rgba(29, 28, 29, 0.06);
+    --page-bg: #f2f2f2;
+    --input-bg: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1d21; --bg-hover: #222529; --text: #d1d2d3; --text-muted: #ababad;
+      --link: #4db3ff; --divider: #383a3e; --badge-bg: #383a3e; --badge-text: #ababad;
+      --code-bg: rgba(255,255,255,0.08); --page-bg: #0f1113; --input-bg: #1a1d21;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1a1d21; --bg-hover: #222529; --text: #d1d2d3; --text-muted: #ababad;
+    --link: #4db3ff; --divider: #383a3e; --badge-bg: #383a3e; --badge-text: #ababad;
+    --code-bg: rgba(255,255,255,0.08); --page-bg: #0f1113; --input-bg: #1a1d21;
+  }
+  :root[data-theme="light"] {
+    --bg: #ffffff; --bg-hover: #f8f8f8; --text: #1d1c1d; --text-muted: #616061;
+    --link: #1264a3; --divider: #dddddd; --badge-bg: #e8e8e8; --badge-text: #616061;
+    --code-bg: rgba(29,28,29,0.06); --page-bg: #f2f2f2; --input-bg: #ffffff;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--page-bg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    color: var(--text);
+    display: flex;
+    justify-content: center;
+  }
+
+  .app {
+    width: 100%;
+    max-width: 680px;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+
+  .titlebar {
+    padding: 14px 16px;
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--divider);
+  }
+
+  .thread {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    background: var(--bg);
+  }
+
+  .msg {
+    display: flex;
+    gap: 10px;
+    padding: 10px 16px;
+    border-bottom: 1px solid transparent;
+  }
+  .msg.user { background: transparent; }
+
+  .avatar {
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-weight: 700;
+    font-size: 14px;
+  }
+  .avatar.bot { background: linear-gradient(135deg, #1264a3, #0b4f82); }
+  .avatar.you { background: #6b6b6b; }
+
+  .msg-body { flex: 1 1 auto; min-width: 0; }
+  .msg-header { display: flex; align-items: baseline; gap: 6px; margin-bottom: 2px; }
+  .msg-name { font-size: 14px; font-weight: 900; }
+  .msg-badge {
+    font-size: 10px; font-weight: 700; color: var(--badge-text);
+    background: var(--badge-bg); padding: 1px 4px; border-radius: 3px;
+  }
+  .msg-time { font-size: 11px; color: var(--text-muted); }
+
+  .context-line {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 13px; color: var(--text-muted); margin-bottom: 4px;
+  }
+  .context-line.thinking { font-style: italic; }
+
+  .section { font-size: 15px; line-height: 1.46; }
+  .section p { margin: 0 0 8px; }
+  .section p:last-child { margin-bottom: 0; }
+  .section ul { margin: 4px 0 8px; padding-left: 22px; }
+  .section li { margin-bottom: 2px; }
+  .section strong { font-weight: 700; }
+  .section a { color: var(--link); text-decoration: none; }
+  .section a:hover { text-decoration: underline; }
+  .section code {
+    background: var(--code-bg); padding: 0.5px 4px; border-radius: 3px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px;
+  }
+
+  .composer {
+    display: flex;
+    gap: 8px;
+    padding: 12px 16px 16px;
+    border-top: 1px solid var(--divider);
+    background: var(--page-bg);
+  }
+  .composer input {
+    flex: 1 1 auto;
+    font-family: inherit;
+    font-size: 15px;
+    color: var(--text);
+    background: var(--input-bg);
+    border: 1px solid var(--divider);
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+  .composer input:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
+  .composer button {
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    color: #fff;
+    background: var(--link);
+    border: none;
+    border-radius: 6px;
+    padding: 0 18px;
+    cursor: pointer;
+  }
+  .composer button:disabled { opacity: 0.5; cursor: default; }
+
+  .empty-state {
+    padding: 40px 24px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="titlebar" id="titlebar">Sherlock — local</div>
+  <div class="thread" id="thread">
+    <div class="empty-state" id="empty-state">Ask it anything — each question streams through the real agent loop against the live knowledge base.</div>
+  </div>
+  <form class="composer" id="composer">
+    <input id="input" type="text" placeholder="Ask Sherlock…" autocomplete="off" autofocus>
+    <button id="send" type="submit">Ask</button>
+  </form>
+</div>
+
+<script>
+const params = new URLSearchParams(location.search);
+const API = params.get("api") || localStorage.getItem("sherlock_chat_api") || "http://localhost:8082";
+localStorage.setItem("sherlock_chat_api", API);
+document.getElementById("titlebar").textContent = `Sherlock — ${API.replace(/^https?:\/\//, "")}`;
+
+const sessionId = "web-test-" + Math.random().toString(36).slice(2);
+const thread = document.getElementById("thread");
+const emptyState = document.getElementById("empty-state");
+const form = document.getElementById("composer");
+const input = document.getElementById("input");
+const sendBtn = document.getElementById("send");
+
+const TOOL_LABELS = {
+  search_kb: "knowledge base",
+  query_entity_events: "entity events",
+  query_entity_operations: "entity operations",
+  query_entity_ancestors: "provenance",
+  query_similar_errors: "similar errors",
+  get_logs: "logs", search_logs: "logs",
+  get_metrics: "metrics", query_prometheus: "metrics",
+  fetch_github_file: "GitHub", fetch_github_blame: "GitHub",
+  fetch_github_file_history: "GitHub", search_github_callers: "GitHub",
+};
+
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Minimal GFM -> HTML: same source syntax bot.py converts to Slack mrkdwn
+// (**bold**, [text](url), `code`), converted to real tags here instead.
+function renderMarkdown(text) {
+  const paragraphs = text.split(/\n\n+/);
+  return paragraphs.map(p => {
+    const lines = p.split("\n");
+    const isList = lines.every(l => l.trim().startsWith("- ") || l.trim() === "");
+    if (isList) {
+      const items = lines.filter(l => l.trim()).map(l => `<li>${inline(l.trim().slice(2))}</li>`).join("");
+      return `<ul>${items}</ul>`;
+    }
+    return `<p>${lines.map(inline).join("<br>")}</p>`;
+  }).join("");
+}
+
+function inline(s) {
+  s = escapeHtml(s);
+  s = s.replace(/\[([^\]]+)\]\((\S+?)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
+  return s;
+}
+
+function timestamp() {
+  return new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function addUserMessage(text) {
+  emptyState.remove();
+  const div = document.createElement("div");
+  div.className = "msg user";
+  div.innerHTML = `
+    <div class="avatar you">Y</div>
+    <div class="msg-body">
+      <div class="msg-header"><span class="msg-name">You</span><span class="msg-time">${timestamp()}</span></div>
+      <div class="section"><p>${escapeHtml(text)}</p></div>
+    </div>`;
+  thread.appendChild(div);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function addBotPlaceholder() {
+  const div = document.createElement("div");
+  div.className = "msg bot";
+  div.innerHTML = `
+    <div class="avatar bot">S</div>
+    <div class="msg-body">
+      <div class="msg-header"><span class="msg-name">Sherlock</span><span class="msg-badge">APP</span><span class="msg-time">${timestamp()}</span></div>
+      <div class="context-line thinking">Thinking…</div>
+      <div class="section"></div>
+    </div>`;
+  thread.appendChild(div);
+  thread.scrollTop = thread.scrollHeight;
+  return div;
+}
+
+function finalizeBotMessage(el, contextText, html) {
+  const ctx = el.querySelector(".context-line");
+  if (contextText) {
+    ctx.textContent = "";
+    ctx.innerHTML = `<span>🔍</span><span>Checked: ${escapeHtml(contextText)}</span>`;
+    ctx.classList.remove("thinking");
+  } else {
+    ctx.remove();
+  }
+  el.querySelector(".section").innerHTML = html;
+  thread.scrollTop = thread.scrollHeight;
+}
+
+// Mirrors bot.py's _stream_to_slack chunk handling: skip the session_id
+// step, skip raw "→ tool(...)" announcement steps (evidence chunks cover
+// that as a "Checked: ..." summary instead), accumulate real narration,
+// prefer a hypothesis/question/error chunk's text as the final answer.
+async function ask(message) {
+  addUserMessage(message);
+  const placeholder = addBotPlaceholder();
+  input.value = "";
+  sendBtn.disabled = true;
+
+  try {
+    const resp = await fetch(`${API}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, session_id: sessionId, interface: "web" }),
+    });
+    const text = await resp.text();
+    const narration = [];
+    const toolsCalled = [];
+    let finalText = "";
+
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      const chunk = JSON.parse(line);
+      const data = chunk.data || {};
+      if (chunk.type === "step" && chunk.text) {
+        if ("session_id" in data) continue;
+        if (chunk.text.trimStart().startsWith("→")) continue;
+        narration.push(chunk.text);
+      } else if (chunk.type === "evidence") {
+        if (data.tool) toolsCalled.push(data.tool);
+      } else if (chunk.type === "question" || chunk.type === "error") {
+        finalText = chunk.text || "";
+      } else if (chunk.type === "hypothesis") {
+        const d = chunk.data || {};
+        finalText = `**${d.classification || "unknown"}** (${d.confidence || "low"} confidence)\n\n${d.summary || ""}` +
+                    (d.recommendation ? `\n\n**Recommendation:** ${d.recommendation}` : "");
+      }
+    }
+    if (!finalText) finalText = narration.join("").trim() || "(no response)";
+
+    const checked = [...new Set(toolsCalled.map(t => TOOL_LABELS[t] || t))].join(", ");
+    finalizeBotMessage(placeholder, checked, renderMarkdown(finalText));
+  } catch (err) {
+    finalizeBotMessage(placeholder, "", `<p style="color:#c0392b">Request failed: ${escapeHtml(String(err))} — is the local server running, and started with SHERLOCK_DEV_CORS=1?</p>`);
+  } finally {
+    sendBtn.disabled = false;
+    input.focus();
+  }
+}
+
+form.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const msg = input.value.trim();
+  if (msg) ask(msg);
+});
+</script>
+</body>
+</html>

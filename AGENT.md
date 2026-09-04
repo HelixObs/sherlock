@@ -100,6 +100,7 @@ via `record_usage()` for durable cost tracking — Prometheus data resets on res
 | `HERALD_URL` | `http://herald:8080` | Herald HTTP API base URL |
 | `HERALD_DB_URL` | — | Direct TimescaleDB URL for entity_events / similar_errors queries |
 | `SHERLOCK_METRICS_PORT` | `9102` | Prometheus metrics port |
+| `SHERLOCK_DEV_CORS` | unset | Enables wide-open CORS for `dev/chat.html`. Local machines only — never set this in a deployed environment |
 
 ## Running locally
 
@@ -107,6 +108,11 @@ via `record_usage()` for durable cost tracking — Prometheus data resets on res
 pip install -e ".[dev]"
 uvicorn sherlock.main:app --reload --port 8082
 ```
+
+To poke at it interactively instead of curling `/chat` by hand, run with
+`SHERLOCK_DEV_CORS=1` and open [`dev/chat.html`](dev/chat.html) directly in a
+browser (`file://`, no server needed for the page itself) — it's a small
+chat UI that streams through the real agent loop.
 
 ## Adding a new instrument config
 

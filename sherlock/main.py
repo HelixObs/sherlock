@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from collections.abc import AsyncGenerator
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from sherlock import agent, audit, context, memory as mem, metrics as mtx, sessions
@@ -24,6 +26,14 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 app = FastAPI(title="Sherlock", description="AI troubleshooting agent for HelixObs")
+# Off by default — never set this in production. Exists so dev/sherlock_chat.html
+# (a local, no-build chat UI opened straight from disk as a file:// page) can
+# call a locally-running server from the browser. Enable with
+# SHERLOCK_DEV_CORS=1 only on your own machine.
+if os.environ.get("SHERLOCK_DEV_CORS"):
+    app.add_middleware(
+        CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    )
 mtx.start_metrics_server()
 
 
@@ -141,18 +151,24 @@ async def chat(body: ChatRequest) -> StreamingResponse:
         if body.replace_history:
             session.history = [{"role": "user", "content": body.message}]
             # Each invocation is a fresh, bounded reasoning task over freshly
-            # replaced context — turn_count must reset per invocation here, not
-            # accumulate over the session's lifetime like it does for a single
-            # bounded entity investigation, or a long-lived thread would
-            # silently hit MAX_TURNS after a handful of unrelated exchanges.
-            # input_tokens/output_tokens stay cumulative — that's cost tracking,
-            # not loop control, and resetting it would undercount real spend.
+            # replaced context, so turn_count resets here too — same rule as
+            # the plain-append branch below, just unconditional, since a
+            # full transcript replace is by definition never a resume of a
+            # pending ask_operator placeholder. input_tokens/output_tokens
+            # stay cumulative — that's cost tracking, not loop control, and
+            # resetting it would undercount real spend.
             session.turn_count = 0
             await sessions.touch(session.id)
         elif not session.history:
             session.history.append({"role": "user", "content": body.message})
         else:
-            _patch_waiting_placeholder(session, body.message)
+            resumed = _patch_waiting_placeholder(session, body.message)
+            if not resumed:
+                # A fresh question in an ongoing chat thread, not a
+                # continuation of a paused investigation — give it its own
+                # turn budget rather than draining the one whole thread-long
+                # counter. See the docstring on _patch_waiting_placeholder.
+                session.turn_count = 0
             await sessions.touch(session.id)
 
         return StreamingResponse(
@@ -197,7 +213,11 @@ async def _reply(
     # failure here can't leak the lock and deadlock this session_id.
     try:
         # Replace the [waiting for operator reply] placeholder with the real answer.
-        _patch_waiting_placeholder(session, content)
+        resumed = _patch_waiting_placeholder(session, content)
+        if not resumed:
+            # No pending question to resume — this reply landed on a session
+            # that wasn't actually waiting, so treat it like a fresh turn.
+            session.turn_count = 0
         await sessions.touch(session_id)
 
         instrument_ctx = context.load(session.instrument_id) if session.instrument_id else None
@@ -380,8 +400,17 @@ async def _stream(
             lock.release()
 
 
-def _patch_waiting_placeholder(session: sessions.Session, operator_reply: str) -> None:
-    """Replace the [waiting for operator reply] tool result with the real answer."""
+def _patch_waiting_placeholder(session: sessions.Session, operator_reply: str) -> bool:
+    """Replace the [waiting for operator reply] tool result with the real answer.
+
+    Returns True if a pending placeholder was found and patched — this reply
+    resumes an investigation Claude itself paused via ask_operator, still
+    within the same bounded task. Returns False if there was nothing to
+    resume, meaning operator_reply is appended as a fresh top-level message —
+    a new question in an ongoing chat thread, not a continuation, so callers
+    use this to know when to reset the turn budget (see MAX_TURNS comment in
+    agent.py and the matching reset in chat()/​_reply()).
+    """
     for msg in reversed(session.history):
         if msg["role"] != "user":
             continue
@@ -395,6 +424,7 @@ def _patch_waiting_placeholder(session: sessions.Session, operator_reply: str) -
                 and item.get("content") == "[waiting for operator reply]"
             ):
                 item["content"] = operator_reply
-                return
+                return True
     # If no placeholder found, append as a plain user message.
     session.history.append({"role": "user", "content": operator_reply})
+    return False
