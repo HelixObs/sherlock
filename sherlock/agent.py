@@ -61,9 +61,54 @@ _PRICING: dict[str, tuple[float, float]] = {
 _DEFAULT_PRICING = (3.00, 15.00)
 
 
-def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+# Cache write/read multipliers on the base input rate (Anthropic's standard
+# 5-minute ephemeral cache): a cache write costs 1.25x normal input price
+# (one-time, the first time a prefix is cached), a cache read costs 0.1x
+# (every subsequent turn that reuses it). Net win as soon as a cached
+# prefix is reused even once within the TTL.
+_CACHE_WRITE_MULTIPLIER = 1.25
+_CACHE_READ_MULTIPLIER = 0.1
+
+
+def _estimate_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_creation_tokens: int = 0,
+    cache_read_tokens: int = 0,
+) -> float:
     input_rate, output_rate = _PRICING.get(model, _DEFAULT_PRICING)
-    return (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
+    cost = input_tokens * input_rate + output_tokens * output_rate
+    cost += cache_creation_tokens * input_rate * _CACHE_WRITE_MULTIPLIER
+    cost += cache_read_tokens * input_rate * _CACHE_READ_MULTIPLIER
+    return cost / 1_000_000
+
+
+def _dedupe_known_entities(result: dict, already_shown: bool) -> tuple[dict, bool]:
+    """search_kb's known_entities fallback is a full ~285-entity dump (see
+    its own docstring) -- fine once, but every repeat miss within the same
+    investigation was resending the identical ~14KB list, permanently baked
+    into history and re-billed on every turn after. Truncates it to a short
+    pointer on the second and later miss within one run() call; the caller
+    resets already_shown per question, so a genuinely new question later
+    still gets the full list fresh.
+
+    Returns (possibly-truncated result, updated already_shown).
+    """
+    if "known_entities" not in result:
+        return result, already_shown
+    if not already_shown:
+        return result, True
+    truncated = {
+        **{k: v for k, v in result.items() if k not in ("known_entities", "note")},
+        "note": (
+            "No exact entity name/alias match for this query, same as a prior "
+            "search this investigation — the full known_entities list was already "
+            "given earlier in this conversation; re-read it there instead of "
+            "requesting it again."
+        ),
+    }
+    return truncated, already_shown
 
 
 def _client() -> anthropic.AsyncAnthropic:
@@ -71,6 +116,60 @@ def _client() -> anthropic.AsyncAnthropic:
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set")
     return anthropic.AsyncAnthropic(api_key=api_key)
+
+
+# ---------------------------------------------------------------------------
+# Prompt caching
+# ---------------------------------------------------------------------------
+# Without this, every turn -- including the final one that just writes prose
+# with no tool call -- resends the full system prompt, tool definitions, and
+# entire session.history as fresh, full-price input tokens. Measured on a
+# real investigation: the no-op final-answer turn alone cost nearly as much
+# as all four preceding search_kb turns combined, purely from re-sending
+# context that hadn't changed. cache_control breakpoints mark a prefix as
+# reusable: a cache write costs 1.25x normal input price once, a cache read
+# costs 0.1x on every later turn that reuses it (see _estimate_cost).
+#
+# Three breakpoints (Anthropic allows up to 4 per request):
+#   1. End of the system prompt -- identical every turn of one investigation,
+#      and often across many investigations for the same instrument.
+#   2. End of the tool definitions -- static, essentially never changes.
+#   3. End of session.history as of the previous turn -- moves forward each
+#      turn, so only the newest tool_result/reply pays full price; the
+#      Anthropic SDK/cache doesn't care that the breakpoint moves, since
+#      each turn's request is still byte-identical up to its own breakpoint.
+# A prefix under ~1024 tokens (Sonnet's minimum) is silently not cached --
+# no error, just no benefit, so this is always safe to include even on a
+# short first turn.
+
+def _cached_system(system_text: str) -> list[dict]:
+    return [{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}]
+
+
+def _cached_tools(definitions: list[dict]) -> list[dict]:
+    if not definitions:
+        return definitions
+    return [
+        {**d, "cache_control": {"type": "ephemeral"}} if i == len(definitions) - 1 else d
+        for i, d in enumerate(definitions)
+    ]
+
+
+def _with_cache_breakpoint(messages: list[dict]) -> list[dict]:
+    """Return messages with a cache breakpoint on the last block of the last
+    message -- a copy, so the cache_control marker never leaks into
+    session.history itself (which gets persisted and resent as plain dicts;
+    it should stay exactly what was actually said, not carry API-only
+    hints from whichever turn happened to be last when it was added)."""
+    if not messages:
+        return messages
+    last = messages[-1]
+    content = last["content"]
+    blocks = [{"type": "text", "text": content}] if isinstance(content, str) else list(content)
+    if not blocks:
+        return messages
+    blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}
+    return [*messages[:-1], {**last, "content": blocks}]
 
 
 def _serialize_content_block(block) -> dict:
@@ -116,6 +215,11 @@ async def run(
     """
     prior_memory = await mem.load(session.instrument_id) if session.instrument_id else []
     system = prompt.build(session.entity_id, instrument_ctx, agent_docs, prior_memory)
+    # Built once per run() call, not per turn -- both are identical every
+    # turn of this investigation, so precomputing avoids rebuilding the same
+    # cache_control-tagged structure on every iteration of the loop below.
+    cached_system = _cached_system(system)
+    cached_tools = _cached_tools(DEFINITIONS)
 
     # Seed the conversation if this is a fresh entity investigation. General
     # chat sessions (no entity_id) are seeded by the /chat handler with the
@@ -143,6 +247,13 @@ async def run(
     investigation_start = _time.monotonic()
     tool_call_count = 0
     tools_used: list[str] = []
+    # search_kb's known_entities fallback is a full ~285-entity dump (see its
+    # own docstring) -- fine once, but every repeat miss within the same
+    # investigation was resending the identical ~14KB list, permanently
+    # baked into history and re-billed on every turn after. Scoped to this
+    # run() call (one question's worth of retries), not the Session itself,
+    # so a genuinely new question later still gets the full list fresh.
+    kb_known_entities_shown = False
 
     while session.turn_count < MAX_TURNS:
         session.turn_count += 1
@@ -163,9 +274,9 @@ async def run(
         first_token_at = None
         async with client.messages.stream(
             model=MODEL,
-            system=system,
-            messages=session.history,
-            tools=DEFINITIONS,
+            system=cached_system,
+            messages=_with_cache_breakpoint(session.history),
+            tools=cached_tools,
             max_tokens=MAX_TOKENS,
         ) as stream:
             async for event in stream:
@@ -187,10 +298,22 @@ async def run(
         if first_token_at is not None:
             mtx.ttfb_seconds.labels(model=MODEL).observe(first_token_at - turn_start)
 
-        # Accumulate token usage for cost estimate.
+        # Accumulate token usage for cost estimate. Also kept per-turn (not
+        # just accumulated) so each tool call this turn triggered can be
+        # attributed to the API call that requested it -- see the evidence
+        # chunk below. Note this is the whole turn's usage, not a marginal
+        # cost for an individual tool: input_tokens already reflects the
+        # full resent history at this point, so with N tool-calling turns
+        # in one investigation, each one resends everything before it.
+        turn_input_tokens = final.usage.input_tokens if final.usage else 0
+        turn_output_tokens = final.usage.output_tokens if final.usage else 0
         if final.usage:
             session.input_tokens  += final.usage.input_tokens
             session.output_tokens += final.usage.output_tokens
+            # Reported separately from input_tokens by the API -- a cache
+            # write/read is never double-counted in input_tokens itself.
+            session.cache_creation_tokens += final.usage.cache_creation_input_tokens or 0
+            session.cache_read_tokens     += final.usage.cache_read_input_tokens or 0
 
         # Collect tool_use blocks from the final message.
         for block in final.content:
@@ -329,13 +452,30 @@ async def run(
                     _time.monotonic() - tool_start
                 )
 
+            if tu.name == "search_kb" and isinstance(result, dict):
+                result, kb_known_entities_shown = _dedupe_known_entities(result, kb_known_entities_shown)
+
             tool_call_count += 1
             tools_used.append(tu.name)
-            log.info("tool %s → %d chars", tu.name, len(json.dumps(result)))
+            log.info(
+                "tool %s(%s) → %d chars (turn used %d in / %d out tokens)",
+                tu.name, args_summary, len(json.dumps(result)), turn_input_tokens, turn_output_tokens,
+            )
 
             yield DiagnoseChunk(
                 type="evidence",
-                data={"tool": tu.name, "result": result},
+                data={
+                    "tool": tu.name,
+                    "args": tu.input,
+                    "result": result,
+                    # The turn that decided to call this tool, not a marginal
+                    # cost for the tool alone -- see the comment above
+                    # turn_input_tokens. When a turn requests several tools
+                    # at once, they share this same figure; the number to
+                    # watch is how it grows turn over turn as history builds.
+                    "turn_tokens_input": turn_input_tokens,
+                    "turn_tokens_output": turn_output_tokens,
+                },
             )
 
             tool_results.append({
@@ -381,7 +521,10 @@ async def _persist_audit(
     filter_hit: bool = False,
     channel: str = "",
 ) -> None:
-    cost = _estimate_cost(MODEL, session.input_tokens, session.output_tokens)
+    cost = _estimate_cost(
+        MODEL, session.input_tokens, session.output_tokens,
+        session.cache_creation_tokens, session.cache_read_tokens,
+    )
     duration_ms = int((_time.monotonic() - start) * 1000)
     await audit.write(
         session_id=session.id,
@@ -407,7 +550,10 @@ async def _persist_usage(
     start: float,
     reached_hypothesis: bool,
 ) -> None:
-    cost = _estimate_cost(MODEL, session.input_tokens, session.output_tokens)
+    cost = _estimate_cost(
+        MODEL, session.input_tokens, session.output_tokens,
+        session.cache_creation_tokens, session.cache_read_tokens,
+    )
     duration_ms = int((_time.monotonic() - start) * 1000)
     await mtx.record_usage(
         session_id=session.id,
@@ -424,14 +570,19 @@ async def _persist_usage(
 
 
 def _done_chunk(session: Session, successful: bool = True) -> DiagnoseChunk:
-    cost = _estimate_cost(MODEL, session.input_tokens, session.output_tokens)
+    cost = _estimate_cost(
+        MODEL, session.input_tokens, session.output_tokens,
+        session.cache_creation_tokens, session.cache_read_tokens,
+    )
     return DiagnoseChunk(
         type="done",
         text="",
         data={
-            "input_tokens":  session.input_tokens,
-            "output_tokens": session.output_tokens,
-            "cost_usd":      round(cost, 6),
-            "model":         MODEL,
+            "input_tokens":         session.input_tokens,
+            "output_tokens":        session.output_tokens,
+            "cache_creation_tokens": session.cache_creation_tokens,
+            "cache_read_tokens":     session.cache_read_tokens,
+            "cost_usd":             round(cost, 6),
+            "model":                MODEL,
         },
     )

@@ -43,6 +43,14 @@ class Session:
     turn_count: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    # Prompt-cache accounting (see agent.py's cache_control breakpoints) --
+    # in-memory only like github_token below, not persisted: these only
+    # affect cost math within a single run() call, and unlike
+    # input_tokens/output_tokens there's no audit/billing requirement to
+    # survive a mid-investigation restart, which would be the only case
+    # that loses anything by not persisting them.
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
     github_token: str = ""   # operator-supplied PAT; lives only in memory, never persisted
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)

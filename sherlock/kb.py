@@ -113,13 +113,80 @@ def _quote_fts_query(query: str) -> str:
     return " ".join(f'"{w}"' if "-" in w else w for w in query.split())
 
 
+def _quote_fts_query_or(query: str) -> str:
+    """Same quoting as _quote_fts_query, but OR-joined instead of the bare
+    space FTS5 reads as an implicit AND. A verbose, natural-language query
+    like "datatrail postgres mongodb MINOC CADC alpenhorn" requires all six
+    words to co-occur in one page under AND -- almost nothing will, even
+    when a page is clearly relevant and matches four or five of them. See
+    search()'s AND-first-then-OR-fallback for why this is only a fallback,
+    not the default: AND's precision is worth keeping whenever it actually
+    finds something."""
+    return " OR ".join(f'"{w}"' if "-" in w else w for w in query.split())
+
+
+# Run Notes pages are per-day/month operator logs ("restarted X at HH:MM") --
+# record-keeping, not documentation. There are hundreds of them (one per
+# station per month), so by sheer volume they dominate both FTS ranking and
+# entity_docs lists, crowding out the actual runbooks/READMEs a "how do I"
+# question needs. Not excluded entirely -- still useful as a last resort,
+# e.g. finding real precedent for an unusual failure -- just sorted after
+# everything else rather than competing with it on equal footing.
+_RUN_NOTES_ORDER_SQL = "(title LIKE '%Run Notes%')"
+
+
+def _fts_search(conn: sqlite3.Connection, query: str, top_k: int) -> list[dict]:
+    """Full-text search with an AND-first, OR-fallback strategy.
+
+    An exact AND match (every word must co-occur in the same page) is tried
+    first -- it's the most precise result when it finds anything, since
+    FTS5's rank naturally favors pages matching more/rarer terms. But a
+    verbose multi-word query (the natural style a model tends to write --
+    e.g. "datatrail postgres mongodb MINOC CADC alpenhorn") requires ALL of
+    those words to appear in one page under AND, which almost nothing will
+    satisfy even when a page is clearly relevant and matches most of them.
+    Falling back to OR only when AND finds literally nothing preserves
+    AND's precision whenever it works, while still surfacing something for
+    exactly the queries that were previously returning zero results and
+    forcing the model into repeated, costly retries.
+    """
+    def _run(fts_query: str) -> list[dict]:
+        # Fetch a superset ordered by rank (non-Run-Notes first), then only
+        # fall back to Run Notes rows if nothing else matched at all -- a
+        # last resort, not just a lower-ranked competitor. top_k*5 is a
+        # generous enough superset to almost never actually truncate the
+        # non-Run-Notes group before it gets partitioned below.
+        cur = conn.execute(
+            "SELECT title, source, reference, "
+            "snippet(pages, 1, '**', '**', '...', 24) AS excerpt "
+            "FROM pages WHERE pages MATCH ? "
+            f"ORDER BY {_RUN_NOTES_ORDER_SQL}, rank LIMIT ?",
+            (fts_query, top_k * 5),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+    all_matches = _run(_quote_fts_query(query))
+    if not all_matches and len(query.split()) > 1:
+        all_matches = _run(_quote_fts_query_or(query))
+
+    non_run_notes = [r for r in all_matches if "Run Notes" not in r["title"]]
+    return (non_run_notes or all_matches)[:top_k]
+
+
 def _entity_with_docs(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     docs = conn.execute(
         "SELECT doc_title, relevance FROM entity_docs WHERE entity_name = ? "
         "ORDER BY relevance",  # "primary" sorts before "secondary"
         (row["name"],),
     ).fetchall()
-    return {**dict(row), "docs": [dict(d) for d in docs]}
+    # Same last-resort treatment as search results (see _RUN_NOTES_ORDER_SQL):
+    # an entity like L4_pipeline can have 19 Run Notes entries out of 29 total
+    # docs, drowning out the handful of real runbooks/READMEs. Drop them
+    # entirely unless they're literally the only thing documenting this
+    # entity at all.
+    non_run_notes = [d for d in docs if "Run Notes" not in d["doc_title"]]
+    kept = non_run_notes or docs
+    return {**dict(row), "docs": [dict(d) for d in kept]}
 
 
 async def search(query: str, top_k: int = 5) -> dict:
@@ -152,13 +219,7 @@ async def search(query: str, top_k: int = 5) -> dict:
 
     conn = _connect()
     try:
-        cur = conn.execute(
-            "SELECT title, source, reference, "
-            "snippet(pages, 1, '**', '**', '...', 24) AS excerpt "
-            "FROM pages WHERE pages MATCH ? ORDER BY rank LIMIT ?",
-            (_quote_fts_query(query), top_k),
-        )
-        results = [dict(row) for row in cur.fetchall()]
+        results = _fts_search(conn, query, top_k)
 
         entity_row = conn.execute(
             "SELECT name, entity_type, aliases FROM entities "
@@ -171,7 +232,15 @@ async def search(query: str, top_k: int = 5) -> dict:
         known_entities = None
         if entity_row is not None:
             entity_info = _entity_with_docs(conn, entity_row)
-        else:
+        elif not results:
+            # Only worth the full ~285-entity, ~14KB dump when the query
+            # otherwise came up empty -- if page search already found real
+            # content, the model has something to work with and doesn't
+            # need to go entity-hunting on top of it. This was previously
+            # unconditional on any entity-name miss, so even a query that
+            # already had 5 good results (e.g. "L4 pipeline restart") paid
+            # for the full list anyway -- baked into history and re-billed
+            # on every turn after.
             known_entities = [
                 {"name": row["name"], "entity_type": row["entity_type"]}
                 for row in conn.execute("SELECT name, entity_type FROM entities ORDER BY name")
@@ -193,4 +262,17 @@ async def search(query: str, top_k: int = 5) -> dict:
         )
     if not results and entity_info is None:
         out["note"] = "No matches — do not answer from general knowledge, say this isn't documented."
+
+    # Titles/entity name, not full page content -- enough to see what a call
+    # actually matched (and to spot a repeated/wasted query) from `kubectl
+    # logs` alone, without the log line itself becoming as big as the
+    # content it's describing.
+    if entity_info is not None:
+        matched = f"entity={entity_info['name']!r}"
+    elif known_entities:
+        matched = f"no entity match, {len(known_entities)} known_entities offered"
+    else:
+        matched = "no entity match"
+    titles = [r["title"] for r in results]
+    log.info("search(%r) -> %s; %d page result(s): %s", query, matched, len(results), titles)
     return out

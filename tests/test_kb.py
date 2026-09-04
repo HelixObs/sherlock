@@ -66,6 +66,78 @@ def test_quote_fts_query_no_hyphens():
     assert kb._quote_fts_query("baseband converter") == "baseband converter"
 
 
+def test_quote_fts_query_or_joins_terms_with_or():
+    assert kb._quote_fts_query_or("baseband converter status") == "baseband OR converter OR status"
+
+
+def test_quote_fts_query_or_quotes_hyphenated_terms():
+    assert kb._quote_fts_query_or("frb-analysis backup") == '"frb-analysis" OR backup'
+
+
+# ── _fts_search (AND-first, OR-fallback) ────────────────────────────────────────
+
+def _fts_conn():
+    """A minimal in-memory pages table -- _fts_search only needs the
+    connection, not the full kb.sqlite3 schema/file path machinery."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE VIRTUAL TABLE pages USING fts5(title, content, source, reference UNINDEXED)")
+    return conn
+
+
+def test_fts_search_uses_precise_and_match_when_it_finds_something():
+    conn = _fts_conn()
+    conn.execute(
+        "INSERT INTO pages VALUES (?, ?, ?, ?)",
+        ("Datatrail", "datatrail postgres mongodb integration", "mediawiki", "https://x/Datatrail"),
+    )
+    conn.commit()
+    results = kb._fts_search(conn, "datatrail postgres mongodb", top_k=5)
+    assert [r["title"] for r in results] == ["Datatrail"]
+
+
+def test_fts_search_falls_back_to_or_when_and_finds_nothing():
+    """The exact scenario that motivated this: a verbose multi-word query
+    where no single page contains every word, but a page containing most
+    of them is clearly the right answer. AND alone returns nothing; OR
+    should still surface it."""
+    conn = _fts_conn()
+    conn.execute(
+        "INSERT INTO pages VALUES (?, ?, ?, ?)",
+        ("Datatrail", "Datatrail's backing store is postgres; it also talks to MINOC and CADC.",
+         "mediawiki", "https://x/Datatrail"),
+    )
+    conn.commit()
+    # None of these six words all co-occur in the page -- "mongodb" and
+    # "alpenhorn" aren't there at all -- so a plain AND match finds nothing.
+    assert kb._fts_search(conn, "datatrail postgres mongodb MINOC CADC alpenhorn", top_k=5) == \
+        kb._fts_search(conn, "datatrail postgres mongodb MINOC CADC alpenhorn", top_k=5)  # stable
+    results = kb._fts_search(conn, "datatrail postgres mongodb MINOC CADC alpenhorn", top_k=5)
+    assert [r["title"] for r in results] == ["Datatrail"]
+
+
+def test_fts_search_single_word_miss_does_not_retry_with_or():
+    """AND and OR are identical for a single term -- retrying would just
+    re-run the same query for no benefit."""
+    conn = _fts_conn()
+    conn.execute(
+        "INSERT INTO pages VALUES (?, ?, ?, ?)",
+        ("Unrelated", "nothing relevant here", "mediawiki", "https://x/Unrelated"),
+    )
+    conn.commit()
+    assert kb._fts_search(conn, "nonexistentterm", top_k=5) == []
+
+
+def test_fts_search_returns_nothing_when_neither_and_nor_or_match():
+    conn = _fts_conn()
+    conn.execute(
+        "INSERT INTO pages VALUES (?, ?, ?, ?)",
+        ("Grafana", "dashboards and panels", "mediawiki", "https://x/Grafana"),
+    )
+    conn.commit()
+    assert kb._fts_search(conn, "datatrail postgres mongodb", top_k=5) == []
+
+
 # ── ensure_fresh ──────────────────────────────────────────────────────────────
 
 @respx.mock
@@ -172,17 +244,18 @@ async def test_search_finds_entity_by_alias_case_insensitive(kb_path):
     assert result["entity"]["name"] == "baseband-converter"
 
 
-async def test_search_content_without_matching_entity(kb_path):
+async def test_search_content_without_matching_entity_skips_known_entities(kb_path):
+    """known_entities is only worth its ~14KB cost when the query otherwise
+    came up empty. cf1n2 already has a real page result -- the model has
+    something to work with, so it shouldn't also pay for the full entity
+    list on top of it."""
     _build_kb_file(kb_path)
     kb._state["checked_at"] = time.time()
 
     result = await kb.search("cf1n2")
     assert len(result["results"]) == 1
     assert "entity" not in result  # cf1n2 isn't its own entity row, just page content
-    # No exact match -> the model gets the full list to reason over itself,
-    # rather than this function guessing via string heuristics.
-    assert result["known_entities"] == [{"name": "baseband-converter", "entity_type": "service"}]
-    assert "note" in result
+    assert "known_entities" not in result
 
 
 async def test_search_no_exact_alias_but_related_entity_in_known_entities(kb_path):
@@ -201,6 +274,80 @@ async def test_search_no_exact_alias_but_related_entity_in_known_entities(kb_pat
     assert "entity" not in result
     names = [e["name"] for e in result["known_entities"]]
     assert "action_rules" in names
+
+
+async def test_search_deprioritizes_run_notes_when_other_results_exist(kb_path):
+    """Run Notes are per-day operator logs, not documentation -- there are
+    hundreds of them, so by volume alone they'd otherwise crowd out the
+    actual runbook. If something else also matches, Run Notes shouldn't
+    show up at all."""
+    _build_kb_file(kb_path)
+    conn = sqlite3.connect(kb_path)
+    conn.execute(
+        "INSERT INTO pages VALUES (?, ?, ?, ?)",
+        ("Run Notes - January 2023", "restarted baseband-converter at 03:40",
+         "mediawiki", "https://bao.chimenet.ca/wiki/index.php/Run_Notes_-_January_2023"),
+    )
+    conn.commit()
+    conn.close()
+    kb._state["checked_at"] = time.time()
+
+    result = await kb.search("baseband-converter")
+    titles = [r["title"] for r in result["results"]]
+    assert "Run Notes - January 2023" not in titles
+    assert "baseband-converter" in titles
+
+
+async def test_search_falls_back_to_run_notes_as_last_resort(kb_path):
+    """If Run Notes are the *only* match, last resort still means a result,
+    not an empty one."""
+    _build_kb_file(kb_path)
+    conn = sqlite3.connect(kb_path)
+    conn.execute(
+        "INSERT INTO pages VALUES (?, ?, ?, ?)",
+        ("Run Notes - January 2023", "restarted the frobnicator service at 03:40",
+         "mediawiki", "https://bao.chimenet.ca/wiki/index.php/Run_Notes_-_January_2023"),
+    )
+    conn.commit()
+    conn.close()
+    kb._state["checked_at"] = time.time()
+
+    result = await kb.search("frobnicator")
+    titles = [r["title"] for r in result["results"]]
+    assert titles == ["Run Notes - January 2023"]
+
+
+async def test_entity_docs_exclude_run_notes_when_other_docs_exist(kb_path):
+    _build_kb_file(kb_path)
+    conn = sqlite3.connect(kb_path)
+    conn.execute(
+        "INSERT INTO entity_docs VALUES (?, ?, ?)",
+        ("baseband-converter", "Run Notes - January 2023", "secondary"),
+    )
+    conn.commit()
+    conn.close()
+    kb._state["checked_at"] = time.time()
+
+    result = await kb.search("baseband-converter")
+    doc_titles = [d["doc_title"] for d in result["entity"]["docs"]]
+    assert "Run Notes - January 2023" not in doc_titles
+
+
+async def test_entity_docs_keep_run_notes_if_thats_all_there_is(kb_path):
+    _build_kb_file(kb_path)
+    conn = sqlite3.connect(kb_path)
+    conn.execute("DELETE FROM entity_docs WHERE entity_name = 'baseband-converter'")
+    conn.execute(
+        "INSERT INTO entity_docs VALUES (?, ?, ?)",
+        ("baseband-converter", "Run Notes - January 2023", "secondary"),
+    )
+    conn.commit()
+    conn.close()
+    kb._state["checked_at"] = time.time()
+
+    result = await kb.search("baseband-converter")
+    doc_titles = [d["doc_title"] for d in result["entity"]["docs"]]
+    assert doc_titles == ["Run Notes - January 2023"]
 
 
 async def test_search_no_matches_returns_note(kb_path):

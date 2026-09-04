@@ -162,6 +162,56 @@
   }
   .composer button:disabled { opacity: 0.5; cursor: default; }
 
+  .token-details {
+    margin: 2px 0 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .token-details summary {
+    cursor: pointer;
+    user-select: none;
+  }
+  .token-table {
+    border-collapse: collapse;
+    margin-top: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  .token-table th, .token-table td {
+    padding: 2px 10px 2px 0;
+    text-align: left;
+  }
+  .token-table th {
+    font-weight: 700;
+    color: var(--text-muted);
+  }
+  .token-table td.num, .token-table th.num {
+    text-align: right;
+  }
+  .token-total {
+    margin-top: 4px;
+    font-weight: 700;
+  }
+  .token-detail-row td {
+    padding-bottom: 6px;
+  }
+  .call-details summary {
+    cursor: pointer;
+    user-select: none;
+    color: var(--link);
+  }
+  .call-result {
+    margin: 4px 0 0;
+    padding: 8px;
+    max-height: 300px;
+    overflow: auto;
+    background: var(--code-bg);
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
   .empty-state {
     padding: 40px 24px;
     text-align: center;
@@ -194,6 +244,21 @@ const emptyState = document.getElementById("empty-state");
 const form = document.getElementById("composer");
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
+
+// Mirrors agent.py's _PRICING — $ per 1M tokens — so per-tool-call cost here
+// lines up with what sherlock_usage/the done chunk's cost_usd actually bills.
+// Update if agent.py's table changes.
+const PRICING = {
+  "claude-sonnet-4-6":         [3.00, 15.00],
+  "claude-opus-4-7":           [15.00, 75.00],
+  "claude-haiku-4-5-20251001": [0.80, 4.00],
+};
+const DEFAULT_PRICING = [3.00, 15.00];
+
+function estimateCost(model, tokensIn, tokensOut) {
+  const [inRate, outRate] = PRICING[model] || DEFAULT_PRICING;
+  return (tokensIn * inRate + tokensOut * outRate) / 1_000_000;
+}
 
 const TOOL_LABELS = {
   search_kb: "knowledge base",
@@ -267,7 +332,7 @@ function addBotPlaceholder() {
   return div;
 }
 
-function finalizeBotMessage(el, contextText, html) {
+function finalizeBotMessage(el, contextText, html, breakdownHtml) {
   const ctx = el.querySelector(".context-line");
   if (contextText) {
     ctx.textContent = "";
@@ -276,8 +341,62 @@ function finalizeBotMessage(el, contextText, html) {
   } else {
     ctx.remove();
   }
+  if (breakdownHtml) {
+    const div = document.createElement("div");
+    div.className = "token-breakdown";
+    div.innerHTML = breakdownHtml;
+    el.querySelector(".msg-body").insertBefore(div, el.querySelector(".section"));
+  }
   el.querySelector(".section").innerHTML = html;
   thread.scrollTop = thread.scrollHeight;
+}
+
+function summarizeArgs(args) {
+  if (!args || !Object.keys(args).length) return "";
+  if (typeof args.query === "string") return args.query;
+  return Object.entries(args).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ");
+}
+
+// One row per tool call, each showing the *whole turn's* token usage (not a
+// marginal per-tool cost — see agent.py's turn_tokens_input comment): a turn
+// that decides to call a tool resends the full history so far, so the
+// number to watch is how much it grows call over call as history builds.
+// Each row's own <details> holds the exact query and raw result returned —
+// the actual thing driving that turn's input size, not just its byte count.
+function renderTokenBreakdown(calls, totalCostUsd) {
+  if (!calls.length) return "";
+  const rows = calls.map((c, i) => {
+    const resultJson = JSON.stringify(c.result ?? null, null, 2);
+    return `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${escapeHtml(TOOL_LABELS[c.tool] || c.tool)}</td>
+      <td class="num">${c.tokensIn.toLocaleString()}</td>
+      <td class="num">${c.tokensOut.toLocaleString()}</td>
+      <td class="num">$${c.cost.toFixed(4)}</td>
+    </tr>
+    <tr class="token-detail-row">
+      <td></td>
+      <td colspan="4">
+        <details class="call-details">
+          <summary>${escapeHtml(summarizeArgs(c.args)) || "(no args)"} — view fetched content</summary>
+          <pre class="call-result">${escapeHtml(resultJson)}</pre>
+        </details>
+      </td>
+    </tr>`;
+  }).join("");
+  const totalLine = totalCostUsd != null
+    ? `<div class="token-total">Total: $${totalCostUsd.toFixed(4)}</div>`
+    : "";
+  return `
+    <details class="token-details">
+      <summary>Token usage by call (${calls.length})</summary>
+      <table class="token-table">
+        <thead><tr><th>#</th><th>Tool</th><th class="num">In</th><th class="num">Out</th><th class="num">Est. cost</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${totalLine}
+    </details>`;
 }
 
 // Mirrors bot.py's _stream_to_slack chunk handling: skip the session_id
@@ -299,7 +418,10 @@ async function ask(message) {
     const text = await resp.text();
     const narration = [];
     const toolsCalled = [];
+    const tokenCalls = [];
     let finalText = "";
+    let model = "";
+    let totalCostUsd = null;
 
     for (const line of text.split("\n")) {
       if (!line.trim()) continue;
@@ -311,18 +433,31 @@ async function ask(message) {
         narration.push(chunk.text);
       } else if (chunk.type === "evidence") {
         if (data.tool) toolsCalled.push(data.tool);
+        if (data.tool && typeof data.turn_tokens_input === "number") {
+          tokenCalls.push({
+            tool: data.tool,
+            args: data.args || {},
+            result: data.result,
+            tokensIn: data.turn_tokens_input,
+            tokensOut: data.turn_tokens_output || 0,
+          });
+        }
       } else if (chunk.type === "question" || chunk.type === "error") {
         finalText = chunk.text || "";
       } else if (chunk.type === "hypothesis") {
         const d = chunk.data || {};
         finalText = `**${d.classification || "unknown"}** (${d.confidence || "low"} confidence)\n\n${d.summary || ""}` +
                     (d.recommendation ? `\n\n**Recommendation:** ${d.recommendation}` : "");
+      } else if (chunk.type === "done") {
+        model = data.model || "";
+        totalCostUsd = typeof data.cost_usd === "number" ? data.cost_usd : null;
       }
     }
     if (!finalText) finalText = narration.join("").trim() || "(no response)";
 
     const checked = [...new Set(toolsCalled.map(t => TOOL_LABELS[t] || t))].join(", ");
-    finalizeBotMessage(placeholder, checked, renderMarkdown(finalText));
+    const calls = tokenCalls.map(c => ({ ...c, cost: estimateCost(model, c.tokensIn, c.tokensOut) }));
+    finalizeBotMessage(placeholder, checked, renderMarkdown(finalText), renderTokenBreakdown(calls, totalCostUsd));
   } catch (err) {
     finalizeBotMessage(placeholder, "", `<p style="color:#c0392b">Request failed: ${escapeHtml(String(err))} — is the local server running, and started with SHERLOCK_DEV_CORS=1?</p>`);
   } finally {
