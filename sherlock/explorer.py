@@ -9,6 +9,7 @@ sherlock.kb handles kb.sqlite3. A failed refresh keeps serving the last copy.
 
 from __future__ import annotations
 
+import heapq
 import logging
 import os
 import time
@@ -125,3 +126,135 @@ def describe(g: dict, query: str) -> dict:
         "generated": g.get("generated"),
     })
     return {"node": detail}
+
+
+def _upstream_edges(g: dict) -> dict[str, list[tuple[str, str, bool]]]:
+    """node id → [(upstream id, how it is connected, is a data-flow edge)]."""
+    edges: dict[str, list[tuple[str, str, bool]]] = {n["id"]: [] for n in g["nodes"]}
+    for n in g["nodes"]:
+        for e in n.get("depends_on", []):
+            edges[n["id"]].append((e["target"], f"depends on ({e.get('why', '')})", False))
+        if n.get("runs_on"):
+            edges[n["id"]].append((n["runs_on"], "runs on", False))
+        for e in n.get("flows_to", []):
+            if not e.get("loop") and e["target"] in edges:
+                edges[e["target"]].append((n["id"], f"is fed by ({e.get('what', '')})", True))
+    return edges
+
+
+_FLOW_COST = 2
+
+
+def _walk_up(edges: dict, start: str, max_depth: int) -> dict[str, tuple[int, list[str]]]:
+    """Cheapest walk towards causes: reached node → (cost, path from start as text steps).
+
+    A dependency or host step costs 1. A data-flow step costs _FLOW_COST,
+    because missing input is weaker evidence than a broken dependency, and
+    flows are followed only along start's own data path: once the walk steps
+    onto something start depends on or runs on, what feeds that dependency
+    can no longer break start.
+    """
+    best: dict[str, tuple[int, list[str]]] = {}
+    seen: set[tuple[str, bool]] = set()
+    heap = [(0, 0, start, True, [start])]
+    while heap:
+        cost, hops, cur, on_data_path, path = heapq.heappop(heap)
+        if (cur, on_data_path) in seen:
+            continue
+        seen.add((cur, on_data_path))
+        best.setdefault(cur, (cost, path))
+        if hops == max_depth:
+            continue
+        for up, how, is_flow in edges.get(cur, []):
+            if is_flow and not on_data_path:
+                continue
+            step_cost = _FLOW_COST if is_flow else 1
+            heapq.heappush(heap, (cost + step_cost, hops + 1, up, on_data_path and is_flow,
+                                  path + [f"{how} → {up}"]))
+    return best
+
+
+def shared_causes(g: dict, symptoms: list[str], healthy: list[str] | None = None,
+                  max_depth: int = 6, limit: int = 8) -> dict:
+    """Rank the upstream nodes that could explain the reported symptoms.
+
+    A candidate explains a symptom when the symptom depends on it, runs on
+    it or is fed by it, directly or through other nodes. Candidates that
+    explain more symptoms, over shorter paths (a data-flow step counts
+    double), and affect fewer other nodes rank first. Nodes reported healthy
+    are dropped; a candidate that a healthy node also relies on is kept but
+    flagged, and ranks lower among equally close candidates.
+    """
+    nodes = g["nodes"]
+    by_id = {n["id"]: n for n in nodes}
+
+    def resolve(names: list[str]) -> tuple[list[str], dict]:
+        ids, problems = [], {}
+        for name in names:
+            found = _find(nodes, name)
+            if len(found) == 1:
+                ids.append(found[0]["id"])
+            else:
+                problems[name] = [_brief(n) for n in found] or "no node matches"
+        return ids, problems
+
+    symptom_ids, unresolved = resolve(symptoms)
+    healthy_ids, unresolved_healthy = resolve(healthy or [])
+    unresolved.update(unresolved_healthy)
+    if unresolved:
+        return {
+            "unresolved": unresolved,
+            "note": "Map each of these to one exact node id (or ask the operator), then call again.",
+            "known_nodes": [f"{n['id']} ({n['kind']})" for n in nodes],
+        }
+
+    edges = _upstream_edges(g)
+    reached = {s: _walk_up(edges, s, max_depth) for s in symptom_ids}
+    healthy_reach = {h: _walk_up(edges, h, max_depth) for h in healthy_ids}
+    downstream_size: dict[str, int] = {}
+    for n in nodes:
+        for up in _walk_up(edges, n["id"], max_depth):
+            if up != n["id"]:
+                downstream_size[up] = downstream_size.get(up, 0) + 1
+
+    candidates = []
+    for cid in set().union(*reached.values()) - set(healthy_ids):
+        explains = {s: p[cid] for s, p in reached.items() if cid in p}
+        cand = by_id[cid]
+        entry = {
+            **_brief(cand),
+            "explains": len(explains),
+            "paths": {s: " ".join([p[0]] + [f"—{step}" for step in p[1:]]) for s, (_, p) in explains.items()},
+            "explorer_url": f"{EXPLORER_PAGE_URL}?node={cid}",
+            "affects_other_nodes": downstream_size.get(cid, 0),
+        }
+        if cand.get("runbook"):
+            entry["runbook"] = cand["runbook"]
+        if cand.get("review"):
+            entry["review"] = cand["review"]
+        relied_on_by_healthy = [h for h, p in healthy_reach.items() if cid in p]
+        if relied_on_by_healthy:
+            entry["also_relied_on_by_healthy"] = relied_on_by_healthy
+        entry["_rank"] = (
+            -len(explains),
+            max(c for c, _ in explains.values()),
+            len(relied_on_by_healthy),
+            sum(c for c, _ in explains.values()),
+            downstream_size.get(cid, 0),
+        )
+        candidates.append(entry)
+
+    candidates.sort(key=lambda c: (c["_rank"], c["id"]))
+    for c in candidates:
+        del c["_rank"]
+    return {
+        "symptoms": symptom_ids,
+        "healthy": healthy_ids,
+        "candidates": candidates[:limit],
+        "candidates_total": len(candidates),
+        "generated": g.get("generated"),
+        "note": (
+            "Candidates come from the explorer's edges, not from live data. "
+            "Treat them as suspects to check, not a diagnosis."
+        ),
+    }

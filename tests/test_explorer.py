@@ -117,3 +117,70 @@ async def test_no_graph_returns_error():
     result = await dispatch("explore_systems", {"node": "frb-archiver"})
 
     assert "error" in result
+
+
+CAUSES_GRAPH = {
+    "generated": "2026-11-25T00:00:00Z",
+    "nodes": [
+        {"id": "site", "name": "site", "kind": "site", "summary": ""},
+        {"id": "host", "name": "host", "kind": "host", "runs_on": "site", "summary": ""},
+        {"id": "db", "name": "db", "kind": "database", "runs_on": "host", "summary": ""},
+        {"id": "queue", "name": "queue", "kind": "queue", "runs_on": "host", "summary": ""},
+        {"id": "writer", "name": "writer", "kind": "operation", "summary": "",
+         "flows_to": [{"target": "db", "what": "rows"}]},
+        {"id": "feeder", "name": "feeder", "kind": "operation", "summary": "",
+         "flows_to": [{"target": "svc-a", "what": "work"}]},
+        {"id": "svc-a", "name": "svc-a", "kind": "service", "summary": "",
+         "depends_on": [{"target": "db", "why": "state"}, {"target": "queue", "why": "jobs"}]},
+        {"id": "svc-b", "name": "svc-b", "kind": "service", "summary": "",
+         "depends_on": [{"target": "db", "why": "state"}]},
+        {"id": "svc-c", "name": "svc-c", "kind": "service", "summary": "",
+         "depends_on": [{"target": "queue", "why": "jobs"}]},
+    ],
+    "tours": [],
+}
+
+
+def _ids(result: dict) -> list[str]:
+    return [c["id"] for c in result["candidates"]]
+
+
+def test_shared_dependency_ranks_first():
+    result = explorer.shared_causes(CAUSES_GRAPH, ["svc-a", "svc-b"])
+
+    top = result["candidates"][0]
+    assert top["id"] == "db"
+    assert top["explains"] == 2
+    assert top["paths"] == {
+        "svc-a": "svc-a —depends on (state) → db",
+        "svc-b": "svc-b —depends on (state) → db",
+    }
+    assert "queue" not in _ids(result)[:2]
+
+
+def test_what_feeds_a_dependency_is_not_a_cause():
+    result = explorer.shared_causes(CAUSES_GRAPH, ["svc-b"])
+
+    assert "writer" not in _ids(result)
+
+
+def test_own_inputs_rank_after_dependencies():
+    ids = _ids(explorer.shared_causes(CAUSES_GRAPH, ["svc-a"]))
+
+    assert ids.index("feeder") > ids.index("db")
+    assert ids.index("feeder") > ids.index("queue")
+
+
+def test_healthy_nodes_drop_out_and_flag_what_they_rely_on():
+    result = explorer.shared_causes(CAUSES_GRAPH, ["svc-a"], healthy=["db", "svc-c"])
+
+    assert "db" not in _ids(result)
+    queue = next(c for c in result["candidates"] if c["id"] == "queue")
+    assert queue["also_relied_on_by_healthy"] == ["svc-c"]
+
+
+def test_unresolved_symptom_asks_for_exact_ids():
+    result = explorer.shared_causes(CAUSES_GRAPH, ["svc", "kubernetes"])
+
+    assert set(result["unresolved"]) == {"svc", "kubernetes"}
+    assert "candidates" not in result

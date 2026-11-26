@@ -29,7 +29,8 @@ sherlock/
                   search_github_callers
     output.py     submit_hypothesis, ask_operator (loop-control tools — no handlers)
     explorer.py   explore_systems — a node from the CHIME/FRB System Explorer with its
-                  dependencies, what it feeds, placement and runbook
+                  dependencies, what it feeds, placement and runbook;
+                  find_shared_causes — ranks what could explain reported symptoms
     grafana.py    Grafana/Tempo URL helpers (not a tool, imported by herald.py)
 tests/
   test_api.py
