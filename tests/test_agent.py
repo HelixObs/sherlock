@@ -10,6 +10,8 @@ from sherlock.agent import (
     _cached_tools,
     _dedupe_known_entities,
     _estimate_cost,
+    _serialize_content_block,
+    _served_content,
     _with_cache_breakpoint,
 )
 
@@ -122,3 +124,32 @@ def test_with_cache_breakpoint_wraps_bare_string_content():
 
 def test_with_cache_breakpoint_handles_empty_messages():
     assert _with_cache_breakpoint([]) == []
+
+
+# ── Sonnet 5.5 content blocks ─────────────────────────────────────────────────
+
+class _Block:
+    def __init__(self, type, **fields):
+        self.type = type
+        self.__dict__.update(fields)
+
+
+def test_thinking_block_is_echoed_with_its_signature():
+    block = _Block("thinking", thinking="", signature="sig-abc")
+    assert _serialize_content_block(block) == {"type": "thinking", "thinking": "", "signature": "sig-abc"}
+
+
+def test_content_without_a_fallback_is_kept_whole():
+    content = [_Block("thinking"), _Block("text"), _Block("tool_use")]
+    assert _served_content(content) == content
+
+
+def test_declined_models_thinking_and_tool_calls_are_dropped_after_a_fallback():
+    text_before = _Block("text")
+    after = [_Block("thinking"), _Block("tool_use")]
+    content = [_Block("thinking"), text_before, _Block("tool_use"), _Block("fallback"), *after]
+    assert _served_content(content) == [text_before, *after]
+
+
+def test_sonnet_5_5_costs_two_thirds_of_sonnet_4_6_per_token():
+    assert _estimate_cost("claude-sonnet-5-5", 1_000_000, 1_000_000) == pytest.approx(12.00)
