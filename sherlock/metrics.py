@@ -153,16 +153,26 @@ async def record_usage(
     tool_call_count: int,
     reached_hypothesis: bool,
     query_type: str = "diagnosis",
+    question_tokens_input: int | None = None,
+    question_tokens_output: int | None = None,
+    question_cost_usd: float | None = None,
 ) -> None:
-    """Write one row to sherlock_usage and update Prometheus counters."""
+    """Write one row to sherlock_usage and update Prometheus counters.
+
+    tokens_*/cost_usd are the conversation's totals so far and go in the
+    row. The question_* values are this question's share and go in the
+    counters, which are summed; they default to the totals."""
+    q_in = tokens_input if question_tokens_input is None else question_tokens_input
+    q_out = tokens_output if question_tokens_output is None else question_tokens_output
+    q_cost = cost_usd if question_cost_usd is None else question_cost_usd
     status = "success" if reached_hypothesis else "failed"
     queries_total.labels(query_type=query_type, status=status).inc()
     query_duration_seconds.labels(query_type=query_type).observe(duration_ms / 1000)
-    tokens_input_total.labels(model=model).inc(tokens_input)
-    tokens_output_total.labels(model=model).inc(tokens_output)
-    tokens_total.labels(model=model).inc(tokens_input + tokens_output)
-    cost_usd_total.labels(model=model).inc(cost_usd)
-    cost_per_query_usd.labels(model=model).observe(cost_usd)
+    tokens_input_total.labels(model=model).inc(q_in)
+    tokens_output_total.labels(model=model).inc(q_out)
+    tokens_total.labels(model=model).inc(q_in + q_out)
+    cost_usd_total.labels(model=model).inc(q_cost)
+    cost_per_query_usd.labels(model=model).observe(q_cost)
 
     if not DB_URL:
         return

@@ -153,3 +153,29 @@ def test_declined_models_thinking_and_tool_calls_are_dropped_after_a_fallback():
 
 def test_sonnet_5_5_costs_two_thirds_of_sonnet_4_6_per_token():
     assert _estimate_cost("claude-sonnet-5-5", 1_000_000, 1_000_000) == pytest.approx(12.00)
+
+
+# ── usage accounting ──────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_counters_get_each_questions_share_and_rows_the_running_total(monkeypatch):
+    from sherlock import agent
+    from sherlock.sessions import Session
+
+    calls = []
+
+    async def fake_record_usage(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(agent.mtx, "record_usage", fake_record_usage)
+    session = Session(id="s1", entity_id="", instrument_id="")
+
+    for _ in range(2):
+        start = agent._usage(session)
+        session.input_tokens += 1_000_000
+        session.output_tokens += 100_000
+        await agent._persist_usage(session, 0, 0.0, reached_hypothesis=False, usage_at_start=start)
+
+    one_question = agent._estimate_cost(agent.MODEL, 1_000_000, 100_000)
+    assert [c["question_cost_usd"] for c in calls] == pytest.approx([one_question, one_question])
+    assert [c["cost_usd"] for c in calls] == pytest.approx([one_question, 2 * one_question])
