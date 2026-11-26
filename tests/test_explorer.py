@@ -136,6 +136,9 @@ CAUSES_GRAPH = {
          "depends_on": [{"target": "db", "why": "state"}]},
         {"id": "svc-c", "name": "svc-c", "kind": "service", "summary": "",
          "depends_on": [{"target": "queue", "why": "jobs"}]},
+        {"id": "svc-d", "name": "svc-d", "kind": "service", "runs_on": "host", "summary": ""},
+        {"id": "op-d", "name": "op-d", "kind": "operation", "runs_on": "svc-d", "summary": "",
+         "depends_on": [{"target": "db", "why": "state"}]},
     ],
     "tours": [],
 }
@@ -202,3 +205,12 @@ def test_node_and_what_it_runs_on_merge_into_one_report():
     result = explorer.shared_causes(CAUSES_GRAPH, ["db", "host", "svc-b"])
 
     assert result["symptoms"] == ["db / host", "svc-b"]
+
+
+def test_reported_service_stands_for_its_operations():
+    result = explorer.shared_causes(CAUSES_GRAPH, ["svc-d", "svc-b"])
+
+    assert result["symptoms"] == ["svc-d / op-d", "svc-b"]
+    top = result["candidates"][0]
+    assert top["id"] == "db"
+    assert top["paths"]["svc-d / op-d"] == "op-d —depends on (state) → db"

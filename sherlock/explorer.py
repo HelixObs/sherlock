@@ -184,7 +184,8 @@ def shared_causes(g: dict, symptoms: list[str | list[str]], healthy: list[str] |
     depends on it, runs on it or is fed by it, directly or through other
     nodes, so mapping one report to several nodes never counts it twice.
     Reports whose nodes run on one another (an operation and its service)
-    are merged into one.
+    are merged into one. A service stands for the operations that run in
+    it, since the explorer records dependencies on operations.
     Candidates that
     explain more symptoms, over shorter paths (a data-flow step counts
     double), and affect fewer other nodes rank first. Nodes reported healthy
@@ -204,10 +205,16 @@ def shared_causes(g: dict, symptoms: list[str | list[str]], healthy: list[str] |
                 problems[name] = [_brief(n) for n in found] or "no node matches"
         return ids, problems
 
+    operations_on: dict[str, list[str]] = {}
+    for n in nodes:
+        if n["kind"] == "operation" and n.get("runs_on"):
+            operations_on.setdefault(n["runs_on"], []).append(n["id"])
+
     reports = [[s] if isinstance(s, str) else list(s) for s in symptoms]
     report_ids, unresolved = [], {}
     for names in reports:
         ids, problems = resolve(names)
+        ids += [op for i in list(ids) for op in operations_on.get(i, []) if op not in ids]
         report_ids.append(ids)
         unresolved.update(problems)
     healthy_ids, unresolved_healthy = resolve(healthy or [])
