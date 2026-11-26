@@ -32,6 +32,11 @@ _FORMATTING_STYLE = """
 - A command with a placeholder is one code span, with the placeholder in
   capitals inside it: `docker service ps SERVICE_NAME`. Never put a code
   span inside another — Slack shows the stray backticks.
+- A placeholder only ever replaces a target inside a command. Everywhere
+  else, a host, node or service keeps its real name, spelled as the docs
+  spell it: a shutdown order lists `frb-l4`, `cfdn8`, `frb-head2`, never
+  `FRB-L4` or `CFDN8`. Capitals mean "fill this in", so a real name in
+  capitals reads as a placeholder.
 - When you give an example of what you mean, use a real one ("an entity ID
   such as `frb-498ec55c5a10`") or plain words, never a placeholder.
 - Use a short bullet list for multiple findings, options, or steps rather
@@ -144,7 +149,8 @@ needs. Most questions are one kind; a follow-up can change the kind.
   turn it into an investigation.
 - **Procedure** ("how do I bring L1 back?", "what's the shutdown order?"):
   find the page, then read_doc it and give the steps in the documented
-  order, citing the section. Commands as templates. If no page covers it,
+  order, citing the section, with the real host and service names the page
+  uses. Only a target inside a command becomes a placeholder. If no page covers it,
   say so and give the general approach, labelled as general.
 - **Alert or symptom** (a pasted alert, "registration is failing"): say what
   it means, then the checks in order, cheapest and most telling first, with
