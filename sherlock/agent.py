@@ -276,6 +276,7 @@ async def run(
         return
 
     investigation_start = _time.monotonic()
+    usage_at_start = _usage(session)
     tool_call_count = 0
     tools_used: list[str] = []
     # search_kb's known_entities fallback is a full ~285-entity dump (see its
@@ -437,7 +438,7 @@ async def run(
                     except Exception:
                         log.exception("failed to save memory")
                 done = _done_chunk(session, successful=True)
-                await _persist_usage(session, tool_call_count, investigation_start, reached_hypothesis=True)
+                await _persist_usage(session, tool_call_count, investigation_start, reached_hypothesis=True, usage_at_start=usage_at_start)
                 await sessions.save(session)
                 response_text = f"{summary} {recommendation}".strip()
                 await _persist_audit(
@@ -462,7 +463,7 @@ async def run(
                 })
                 session.history.append({"role": "user", "content": tool_results})
                 # Persist partial usage so sherlock_usage always has a record.
-                await _persist_usage(session, tool_call_count, investigation_start, reached_hypothesis=False)
+                await _persist_usage(session, tool_call_count, investigation_start, reached_hypothesis=False, usage_at_start=usage_at_start)
                 # Durable now — a reply hours or days later resumes this exact state.
                 await sessions.save(session)
                 # Not sanitized: this is Sherlock asking the operator something,
@@ -550,7 +551,7 @@ async def run(
         sanitized_text = _REFUSAL_MESSAGE
         yield DiagnoseChunk(type="error", text=_REFUSAL_MESSAGE)
 
-    await _persist_usage(session, tool_call_count, investigation_start, reached_hypothesis=False)
+    await _persist_usage(session, tool_call_count, investigation_start, reached_hypothesis=False, usage_at_start=usage_at_start)
     await sessions.save(session)
     await _persist_audit(
         session, question, sanitized_text, tools_used,
@@ -593,16 +594,26 @@ async def _persist_audit(
     )
 
 
+def _usage(session: Session) -> tuple[int, int, int, int]:
+    return (
+        session.input_tokens, session.output_tokens,
+        session.cache_creation_tokens, session.cache_read_tokens,
+    )
+
+
 async def _persist_usage(
     session: Session,
     tool_call_count: int,
     start: float,
     reached_hypothesis: bool,
+    usage_at_start: tuple[int, int, int, int],
 ) -> None:
-    cost = _estimate_cost(
-        MODEL, session.input_tokens, session.output_tokens,
-        session.cache_creation_tokens, session.cache_read_tokens,
-    )
+    """The row carries the conversation's total so far; the Prometheus
+    counters get only this question's share, so summing them over time
+    gives what was actually spent."""
+    cost = _estimate_cost(MODEL, *_usage(session))
+    spent = [now - before for now, before in zip(_usage(session), usage_at_start)]
+    question_cost = _estimate_cost(MODEL, *spent)
     duration_ms = int((_time.monotonic() - start) * 1000)
     await mtx.record_usage(
         session_id=session.id,
@@ -615,6 +626,9 @@ async def _persist_usage(
         duration_ms=duration_ms,
         tool_call_count=tool_call_count,
         reached_hypothesis=reached_hypothesis,
+        question_tokens_input=spent[0],
+        question_tokens_output=spent[1],
+        question_cost_usd=question_cost,
     )
 
 
