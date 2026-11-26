@@ -30,8 +30,17 @@ from sherlock.tools import DEFINITIONS, dispatch
 
 log = logging.getLogger(__name__)
 
-MODEL      = os.environ.get("SHERLOCK_MODEL", "claude-sonnet-4-6")
-MAX_TOKENS = 4096
+MODEL      = os.environ.get("SHERLOCK_MODEL", "claude-sonnet-5-5")
+# Thinking counts toward max_tokens, so this leaves room for it on top of
+# the answer itself.
+MAX_TOKENS = 16000
+EFFORT     = os.environ.get("SHERLOCK_EFFORT", "medium")
+# drop_block: a system prompt rebuilt between replies (new Tier 2 memory,
+# re-fetched agent docs) invalidates earlier thinking blocks; drop them
+# instead of failing the request. fallbacks: a declined request is re-run
+# server-side on another model.
+_BETAS = ["thinking-binding-controls-2026-08-01", "server-side-fallback-2026-07-01"]
+_THINKING = {"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "drop_block"}}
 # Caps internal back-and-forth (model turn -> tool calls -> model turn...) for
 # a single question, not a whole conversation — main.py resets
 # session.turn_count to 0 at the start of every fresh question (chat or
@@ -54,11 +63,18 @@ INSTRUMENT = os.environ.get("INSTRUMENT", "")
 # Pricing per million tokens (USD). Update if model changes.
 _PRICING: dict[str, tuple[float, float]] = {
     # model-id: (input $/1M, output $/1M)
+    "claude-sonnet-5-5":          (2.00, 10.00),
+    "claude-sonnet-5":            (2.00, 10.00),
     "claude-sonnet-4-6":          (3.00, 15.00),
     "claude-opus-4-7":            (15.00, 75.00),
     "claude-haiku-4-5-20251001":  (0.80,  4.00),
 }
 _DEFAULT_PRICING = (3.00, 15.00)
+
+_REFUSAL_MESSAGE = (
+    "The model declined to answer this, and so did the fallback model. "
+    "Try asking again with more context about what you are checking and why."
+)
 
 
 # Cache write/read multipliers on the base input rate (Anthropic's standard
@@ -176,14 +192,29 @@ def _serialize_content_block(block) -> dict:
     """Minimal, explicit reconstruction of an assistant content block for
     session.history — deliberately not block.model_dump(), which includes
     response-only fields the API rejects if they're sent back in a later
-    request. Only the two block types Sherlock's loop actually produces
+    request. Only the block types Sherlock's loop actually produces
     are whitelisted; anything else falls back to model_dump() as a
-    best-effort rather than dropping the block entirely."""
+    best-effort rather than dropping the block entirely. Thinking blocks
+    go back exactly as received -- their signature is checked."""
     if block.type == "text":
         return {"type": "text", "text": block.text}
     if block.type == "tool_use":
         return {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
+    if block.type == "thinking":
+        return {"type": "thinking", "thinking": block.thinking, "signature": block.signature}
+    if block.type == "redacted_thinking":
+        return {"type": "redacted_thinking", "data": block.data}
     return block.model_dump()
+
+
+def _served_content(content: list) -> list:
+    """The blocks of a turn that count after a server-side fallback. Before
+    the last fallback block, only text survives: the declined model's
+    thinking and tool calls must not be echoed back or run."""
+    last = max((i for i, b in enumerate(content) if b.type == "fallback"), default=None)
+    if last is None:
+        return list(content)
+    return [b for b in content[:last] if b.type == "text"] + list(content[last + 1:])
 
 
 async def run(
@@ -254,6 +285,7 @@ async def run(
     # run() call (one question's worth of retries), not the Session itself,
     # so a genuinely new question later still gets the full list fresh.
     kb_known_entities_shown = False
+    refused = False
 
     while session.turn_count < MAX_TURNS:
         session.turn_count += 1
@@ -272,12 +304,16 @@ async def run(
         # guardrail section.
         turn_start = _time.monotonic()
         first_token_at = None
-        async with client.messages.stream(
+        async with client.beta.messages.stream(
             model=MODEL,
             system=cached_system,
             messages=_with_cache_breakpoint(session.history),
             tools=cached_tools,
             max_tokens=MAX_TOKENS,
+            thinking=_THINKING,
+            output_config={"effort": EFFORT},
+            betas=_BETAS,
+            extra_body={"fallbacks": "default"},
         ) as stream:
             async for event in stream:
                 # content_block_start fires for the first block of any kind
@@ -315,8 +351,18 @@ async def run(
             session.cache_creation_tokens += final.usage.cache_creation_input_tokens or 0
             session.cache_read_tokens     += final.usage.cache_read_input_tokens or 0
 
+        # A decline that survived the fallback: its partial output is
+        # discarded, not kept in history or shown.
+        if final.stop_reason == "refusal":
+            refused = True
+            full_text = ""
+            break
+
+        served = _served_content(final.content)
+        full_text = "".join(b.text for b in served if b.type == "text")
+
         # Collect tool_use blocks from the final message.
-        for block in final.content:
+        for block in served:
             if block.type == "tool_use":
                 tool_uses.append(block)
 
@@ -336,7 +382,7 @@ async def run(
         # SDK version happens to attach to a response block.
         session.history.append({
             "role": "assistant",
-            "content": [_serialize_content_block(block) for block in final.content],
+            "content": [_serialize_content_block(block) for block in served],
         })
 
         # ── No tool calls → model finished speaking without submit_hypothesis ──
@@ -500,6 +546,9 @@ async def run(
         )
     if sanitized_text:
         yield DiagnoseChunk(type="step", text=sanitized_text)
+    if refused:
+        sanitized_text = _REFUSAL_MESSAGE
+        yield DiagnoseChunk(type="error", text=_REFUSAL_MESSAGE)
 
     await _persist_usage(session, tool_call_count, investigation_start, reached_hypothesis=False)
     await sessions.save(session)

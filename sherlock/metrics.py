@@ -105,7 +105,7 @@ ttfb_seconds = Histogram(
 _QUERY_TYPES = ["diagnosis", "reply"]
 _INFLIGHT_QUERY_TYPES = ["diagnosis", "chat", "reply"]
 _STATUSES = ["success", "failed"]
-_MODELS = ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001", "memory"]
+_MODELS = ["claude-sonnet-5-5", "claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001", "memory"]
 
 
 def _init_label_combinations() -> None:

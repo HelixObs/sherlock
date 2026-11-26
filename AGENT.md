@@ -99,7 +99,8 @@ via `record_usage()` for durable cost tracking — Prometheus data resets on res
 |---|---|---|
 | `SHERLOCK_INSTRUMENTS_DIR` | `/app/instruments` | Path to YAML instrument configs (volume-mounted from `deploy/instruments/`) |
 | `ANTHROPIC_API_KEY` | — | Required for the agent loop |
-| `SHERLOCK_MODEL` | `claude-sonnet-4-6` | Claude model ID |
+| `SHERLOCK_MODEL` | `claude-sonnet-5-5` | Claude model ID |
+| `SHERLOCK_EFFORT` | `medium` | Effort level (`low`–`max`); thinking depth and token spend |
 | `HERALD_URL` | `http://herald:8080` | Herald HTTP API base URL |
 | `HERALD_DB_URL` | — | Direct TimescaleDB URL for entity_events / similar_errors queries |
 | `SHERLOCK_METRICS_PORT` | `9102` | Prometheus metrics port |
