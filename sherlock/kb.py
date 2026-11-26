@@ -136,6 +136,16 @@ def _quote_fts_query_or(query: str) -> str:
 _RUN_NOTES_ORDER_SQL = "(title LIKE '%Run Notes%')"
 
 
+# FTS5 rank is negative (lower is better), so scaling it up boosts a runbook
+# over an ops page that matches about as well, without letting a weak
+# runbook match beat a strong one.
+_RUNBOOK_BOOST_SQL = "rank * (CASE tier WHEN 'runbook' THEN 1.5 ELSE 1 END)"
+
+
+def _has_tiers(conn: sqlite3.Connection) -> bool:
+    return "tier" in [d[0] for d in conn.execute("SELECT * FROM pages LIMIT 0").description]
+
+
 def _fts_search(conn: sqlite3.Connection, query: str, top_k: int) -> list[dict]:
     """Full-text search with an AND-first, OR-fallback strategy.
 
@@ -150,28 +160,41 @@ def _fts_search(conn: sqlite3.Connection, query: str, top_k: int) -> list[dict]:
     AND's precision whenever it works, while still surfacing something for
     exactly the queries that were previously returning zero results and
     forcing the model into repeated, costly retries.
+
+    Pages carry a tier (frb-ai's tiers.py): runbook and ops pages are
+    searched first; reference pages (science, meetings, pathfinder-era
+    logs) are returned only when no current page matches.
     """
-    def _run(fts_query: str) -> list[dict]:
+    tiered = _has_tiers(conn)
+    columns = "title, source, reference, snippet(pages, 1, '**', '**', '...', 24) AS excerpt"
+    if tiered:
+        columns += ", tier, edited"
+
+    def _run(fts_query: str, where: str = "", order: str = "rank") -> list[dict]:
         # Fetch a superset ordered by rank (non-Run-Notes first), then only
         # fall back to Run Notes rows if nothing else matched at all -- a
         # last resort, not just a lower-ranked competitor. top_k*5 is a
         # generous enough superset to almost never actually truncate the
         # non-Run-Notes group before it gets partitioned below.
         cur = conn.execute(
-            "SELECT title, source, reference, "
-            "snippet(pages, 1, '**', '**', '...', 24) AS excerpt "
-            "FROM pages WHERE pages MATCH ? "
-            f"ORDER BY {_RUN_NOTES_ORDER_SQL}, rank LIMIT ?",
+            f"SELECT {columns} FROM pages WHERE pages MATCH ? {where} "
+            f"ORDER BY {_RUN_NOTES_ORDER_SQL}, {order} LIMIT ?",
             (fts_query, top_k * 5),
         )
-        return [{**dict(row), "excerpt": redact(row["excerpt"] or "")} for row in cur.fetchall()]
+        rows = [{**dict(row), "excerpt": redact(row["excerpt"] or "")} for row in cur.fetchall()]
+        non_run_notes = [r for r in rows if "Run Notes" not in r["title"]]
+        return non_run_notes or rows
 
-    all_matches = _run(_quote_fts_query(query))
-    if not all_matches and len(query.split()) > 1:
-        all_matches = _run(_quote_fts_query_or(query))
+    def _search(fts_query: str) -> list[dict]:
+        if not tiered:
+            return _run(fts_query)[:top_k]
+        current = _run(fts_query, "AND tier != 'reference'", _RUNBOOK_BOOST_SQL)
+        return (current or _run(fts_query, "AND tier = 'reference'"))[:top_k]
 
-    non_run_notes = [r for r in all_matches if "Run Notes" not in r["title"]]
-    return (non_run_notes or all_matches)[:top_k]
+    results = _search(_quote_fts_query(query))
+    if not results and len(query.split()) > 1:
+        results = _search(_quote_fts_query_or(query))
+    return results
 
 
 def _entity_with_docs(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
