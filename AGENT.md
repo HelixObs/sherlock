@@ -101,6 +101,7 @@ via `record_usage()` for durable cost tracking — Prometheus data resets on res
 | `ANTHROPIC_API_KEY` | — | Required for the agent loop |
 | `SHERLOCK_MODEL` | `claude-sonnet-5-5` | Claude model ID |
 | `SHERLOCK_EFFORT` | `medium` | Effort level (`low`–`max`); thinking depth and token spend |
+| `SHERLOCK_TELEMETRY_TOOLS` | off | `true` registers the Loki and Prometheus tools. Off, Sherlock has no tool that reads logs or metrics |
 | `HERALD_URL` | `http://herald:8080` | Herald HTTP API base URL |
 | `HERALD_DB_URL` | — | Direct TimescaleDB URL for entity_events / similar_errors queries |
 | `SHERLOCK_METRICS_PORT` | `9102` | Prometheus metrics port |

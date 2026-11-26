@@ -12,14 +12,20 @@ Usage:
 
 from __future__ import annotations
 
+import os
+
 from sherlock.tools import explorer, herald, github, herodotus, loki, output, prometheus
+
+# Loki and Prometheus are off unless explicitly enabled: with them off,
+# Sherlock has no path to logs or metrics at all, not just a prompt rule.
+TELEMETRY_TOOLS = os.environ.get("SHERLOCK_TELEMETRY_TOOLS", "").lower() in ("1", "true", "yes")
+_telemetry = [loki, prometheus] if TELEMETRY_TOOLS else []
 
 # All Claude tool schema definitions — pass directly to anthropic.messages.create()
 DEFINITIONS: list[dict] = [
     *github.DEFINITIONS,
-    *loki.DEFINITIONS,
     *herald.DEFINITIONS,
-    *prometheus.DEFINITIONS,
+    *(d for m in _telemetry for d in m.DEFINITIONS),
     *herodotus.DEFINITIONS,
     *explorer.DEFINITIONS,
     *output.DEFINITIONS,
@@ -28,9 +34,8 @@ DEFINITIONS: list[dict] = [
 # name → async callable (output tools have no handlers — loop interprets them)
 _HANDLERS: dict = {
     **github.HANDLERS,
-    **loki.HANDLERS,
     **herald.HANDLERS,
-    **prometheus.HANDLERS,
+    **{k: v for m in _telemetry for k, v in m.HANDLERS.items()},
     **herodotus.HANDLERS,
     **explorer.HANDLERS,
 }
