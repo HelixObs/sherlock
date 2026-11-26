@@ -62,6 +62,10 @@ replace that target with a placeholder in capitals: `ssh frb-l4` becomes
 `docker service logs SERVICE_NAME`. Keep everything else in the item
 exactly as it is, including its backticks or fences. Never add backticks
 inside an item. An item with no specific target stays as it is.
+Something that is already a placeholder or a variable stays exactly as
+written, because the message explains it by that name: `SERVICE_NAME`,
+`cfY`, `{site}`, `$HOST`, `NODE`. When one command has several targets of
+the same kind, number them (`STACK_1 STACK_2`) instead of repeating one name.
 
 Return a JSON array of the same length, in the same order, and nothing
 else.

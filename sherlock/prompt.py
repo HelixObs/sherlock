@@ -138,8 +138,11 @@ things, don't conflate them:**
   `docker service logs SERVICE_NAME` for the deleter
   (`datatrail-client_deleter`)." Which host to log in to, which service,
   which mount: always say these by their real names. Only the command
-  string itself is templated. When a command takes several targets, list
-  the real names for each right after it ("the stacks are `datatrail`,
+  string itself is templated. Every command you write is shown to the
+  operator with its targets swapped for placeholders, even if you wrote
+  the real names into it, so anything they need to fill in must also be in
+  the sentence. When a command takes several targets, list the real names
+  for each right after it ("the stacks are `datatrail`,
   `datatrail-daemons` and `datatrail-client`"), so a line like
   `docker stack rm STACK_NAME STACK_NAME` still tells them what to type.
 
