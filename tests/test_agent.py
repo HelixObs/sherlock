@@ -179,3 +179,27 @@ async def test_counters_get_each_questions_share_and_rows_the_running_total(monk
     one_question = agent._estimate_cost(agent.MODEL, 1_000_000, 100_000)
     assert [c["question_cost_usd"] for c in calls] == pytest.approx([one_question, one_question])
     assert [c["cost_usd"] for c in calls] == pytest.approx([one_question, 2 * one_question])
+
+
+# ── telemetry tools ───────────────────────────────────────────────────────────
+
+def test_telemetry_tools_are_off_by_default():
+    from sherlock import tools
+    names = {d["name"] for d in tools.DEFINITIONS}
+    assert not tools.TELEMETRY_TOOLS
+    assert "query_loki" not in names and "query_prometheus" not in names
+
+
+@pytest.mark.asyncio
+async def test_a_telemetry_call_is_refused_when_off():
+    from sherlock import tools
+    result = await tools.dispatch("query_prometheus", {"query": "up"})
+    assert "unknown tool" in result["error"]
+
+
+def test_entity_prompt_asks_the_operator_for_logs_when_telemetry_is_off():
+    from sherlock import prompt
+    text = prompt.build("ent-123", None, [])
+    assert "Query Loki" not in text and "query_loki" not in text
+    assert "You can't read logs" in text
+    assert "{" + "logs_step}" not in text
