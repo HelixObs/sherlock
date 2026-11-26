@@ -282,6 +282,8 @@ async def _call_diagnose(entity_id: str, session_id: str, operator_id: str, oper
 # than by asking the model to write two dialects.
 _GFM_LINK_RE = re.compile(r"\[([^\]]+)\]\((\S+?)\)")
 _GFM_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_GFM_HEADING_RE = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
+_GFM_RULE_RE = re.compile(r"^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$\n?", re.MULTILINE)
 
 # Tool names → a short, human label for the "checked" summary line. Falls
 # back to the raw name for anything not listed — not meant to be exhaustive.
@@ -299,12 +301,16 @@ _TOOL_LABELS = {
     "fetch_github_blame": "GitHub",
     "fetch_github_file_history": "GitHub",
     "search_github_callers": "GitHub",
+    "explore_systems": "System Explorer",
+    "find_shared_causes": "System Explorer",
 }
 
 
 def _to_slack_mrkdwn(text: str) -> str:
     text = _GFM_LINK_RE.sub(lambda m: f"<{m.group(2)}|{m.group(1)}>", text)
     text = _GFM_BOLD_RE.sub(lambda m: f"*{m.group(1)}*", text)
+    text = _GFM_HEADING_RE.sub(lambda m: f"*{m.group(1)}*", text)
+    text = _GFM_RULE_RE.sub("", text)
     return text
 
 
@@ -339,6 +345,10 @@ async def _stream_to_slack(client, channel: str, ts: str, chunks) -> None:
             tool = data.get("tool")
             if tool:
                 tools_called.append(tool)
+            # Text written before a tool call is the model thinking aloud
+            # ("Let me look that up"); only what follows the last call is
+            # the answer, so a single Slack update shows just that.
+            narration_parts.clear()
         elif ctype == "question":
             final_text = chunk.get("text", "")
         elif ctype == "hypothesis":

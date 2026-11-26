@@ -174,12 +174,18 @@ def _walk_up(edges: dict, start: str, max_depth: int) -> dict[str, tuple[int, li
     return best
 
 
-def shared_causes(g: dict, symptoms: list[str], healthy: list[str] | None = None,
+def shared_causes(g: dict, symptoms: list[str | list[str]], healthy: list[str] | None = None,
                   max_depth: int = 6, limit: int = 8) -> dict:
     """Rank the upstream nodes that could explain the reported symptoms.
 
-    A candidate explains a symptom when the symptom depends on it, runs on
-    it or is fed by it, directly or through other nodes. Candidates that
+    Each entry in symptoms is one thing the operator reported: a node, or a
+    list of nodes the report could mean (an operation and the service it
+    runs in, say). A candidate explains a symptom when any of its nodes
+    depends on it, runs on it or is fed by it, directly or through other
+    nodes, so mapping one report to several nodes never counts it twice.
+    Reports whose nodes run on one another (an operation and its service)
+    are merged into one.
+    Candidates that
     explain more symptoms, over shorter paths (a data-flow step counts
     double), and affect fewer other nodes rank first. Nodes reported healthy
     are dropped; a candidate that a healthy node also relies on is kept but
@@ -198,7 +204,12 @@ def shared_causes(g: dict, symptoms: list[str], healthy: list[str] | None = None
                 problems[name] = [_brief(n) for n in found] or "no node matches"
         return ids, problems
 
-    symptom_ids, unresolved = resolve(symptoms)
+    reports = [[s] if isinstance(s, str) else list(s) for s in symptoms]
+    report_ids, unresolved = [], {}
+    for names in reports:
+        ids, problems = resolve(names)
+        report_ids.append(ids)
+        unresolved.update(problems)
     healthy_ids, unresolved_healthy = resolve(healthy or [])
     unresolved.update(unresolved_healthy)
     if unresolved:
@@ -208,8 +219,32 @@ def shared_causes(g: dict, symptoms: list[str], healthy: list[str] | None = None
             "known_nodes": [f"{n['id']} ({n['kind']})" for n in nodes],
         }
 
+    def placement(nid: str) -> set[str]:
+        chain, cur = set(), nid
+        while cur and cur not in chain:
+            chain.add(cur)
+            cur = by_id.get(cur, {}).get("runs_on")
+        return chain
+
+    merged_reports: list[list[str]] = []
+    for ids in report_ids:
+        home = next((r for r in merged_reports
+                     if any(a in placement(b) or b in placement(a) for a in ids for b in r)), None)
+        if home is None:
+            merged_reports.append(list(ids))
+        else:
+            home.extend(i for i in ids if i not in home)
+    report_ids = merged_reports
+
     edges = _upstream_edges(g)
-    reached = {s: _walk_up(edges, s, max_depth) for s in symptom_ids}
+    reached: dict[str, dict[str, tuple[int, list[str]]]] = {}
+    for ids in report_ids:
+        merged: dict[str, tuple[int, list[str]]] = {}
+        for sid in ids:
+            for nid, (cost, path) in _walk_up(edges, sid, max_depth).items():
+                if nid not in merged or cost < merged[nid][0]:
+                    merged[nid] = (cost, path)
+        reached[" / ".join(ids)] = merged
     healthy_reach = {h: _walk_up(edges, h, max_depth) for h in healthy_ids}
     downstream_size: dict[str, int] = {}
     for n in nodes:
@@ -248,7 +283,7 @@ def shared_causes(g: dict, symptoms: list[str], healthy: list[str] | None = None
     for c in candidates:
         del c["_rank"]
     return {
-        "symptoms": symptom_ids,
+        "symptoms": list(reached),
         "healthy": healthy_ids,
         "candidates": candidates[:limit],
         "candidates_total": len(candidates),

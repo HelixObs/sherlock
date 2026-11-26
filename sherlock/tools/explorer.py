@@ -63,7 +63,10 @@ DEFINITIONS = [
             "is no entity to investigate, especially when there is more "
             "than one symptom or you cannot see the logs or metrics. Map "
             "each symptom to an explorer node first (explore_systems helps; "
-            "ask the operator if it is unclear). "
+            "ask the operator if it is unclear). Two reports are two "
+            "entries, however many nodes each could mean: extra entries "
+            "for the same report push shared infrastructure (a cluster, "
+            "a host) to the top for the wrong reason. "
             "\n\n"
             "The ranking comes from how the systems are connected, not from "
             "live data. Present the top candidates as suspects, then ask "
@@ -79,8 +82,19 @@ DEFINITIONS = [
             "properties": {
                 "symptoms": {
                     "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Explorer node ids (or exact names) the operator reports as failing, slow or missing.",
+                    "items": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                    },
+                    "description": (
+                        "One entry per thing the operator reported as failing, "
+                        "slow or missing — never more entries than reports. An "
+                        "entry is an explorer node id, or a list of ids when the "
+                        "report could mean several nodes (e.g. an operation and "
+                        "the service it runs in)."
+                    ),
                 },
                 "healthy": {
                     "type": "array",

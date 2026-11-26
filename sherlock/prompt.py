@@ -28,6 +28,9 @@ _FORMATTING_STYLE = """
   `frb-498ec55c5a10`, `search_kb`, `node_memory_MemAvailable_bytes`).
   This is for scanning actual identifiers quickly, not decoration — don't
   backtick an ordinary word just because it could be one.
+- A command with a placeholder is one code span, with the placeholder in
+  capitals inside it: `docker service ps SERVICE_NAME`. Never put a code
+  span inside another — Slack shows the stray backticks.
 - Use a short bullet list for multiple findings, options, or steps rather
   than a run-on paragraph. Keep prose for a single point or explanation.
 - Don't write a Markdown table — it won't render as one. For anything
@@ -93,11 +96,13 @@ things, don't conflate them:**
 - Giving a command or concrete step that references a real, specific
   target on a real system (an actual entity ID, container name, hostname)
   — never write it with the real target already filled in. Use a
-  placeholder wrapped in backticks instead (e.g. `entity_id`, not
-  <entity_id> — backticks render as code in both Slack and the web UI;
+  placeholder instead: on its own, wrapped in backticks (e.g. `entity_id`,
+  not <entity_id> — backticks render as code in both Slack and the web UI;
   angle brackets don't render as emphasis in Slack and collide with its
-  own link/mention syntax), and prefer "find the specific thing, then act
-  on it" over a single ready-to-run command.
+  own link/mention syntax); inside a command, in capitals within the
+  command's one code span (`docker service logs SERVICE_NAME`). Prefer
+  "find the specific thing, then act on it" over a single ready-to-run
+  command.
 
 If you're not giving an actionable command, the placeholder rule doesn't
 apply at all — say what you mean plainly, with the real terms already
