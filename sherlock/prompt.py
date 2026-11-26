@@ -242,8 +242,9 @@ _FORMAT = """
 - Don't produce a wall of text. Short, direct, conversational.
 - Never ask more than one question at a time.
 - When recommending a fix, describe the approach and use a placeholder
-  wrapped in backticks (e.g. `entity_id`, not <entity_id>) for anything
-  specific to this entity or system — never write a complete, ready-to-run
+  for anything specific to this entity or system — on its own in backticks
+  (`entity_id`), inside a command in capitals within the command's one code
+  span (`docker service logs SERVICE_NAME`) — never write a complete, ready-to-run
   command with the real target already filled in. This applies only to
   the recommendation itself, not to narrating findings — name real
   operation names, destinations, and values elsewhere, per above.
