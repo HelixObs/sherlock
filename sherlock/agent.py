@@ -22,6 +22,7 @@ from sherlock import audit
 from sherlock import guardrail
 from sherlock import memory as mem
 from sherlock import metrics as mtx
+from sherlock import prefetch
 from sherlock import prompt
 from sherlock import sessions
 from sherlock.models import DiagnoseChunk, HypothesisData, InstrumentContext
@@ -263,6 +264,15 @@ async def run(
             "role": "user",
             "content": f"Investigate entity `{session.entity_id}` and determine the root cause of its error.",
         })
+
+    if not session.entity_id and session.history and session.history[-1]["role"] == "user" \
+            and isinstance(session.history[-1]["content"], str):
+        asked = session.history[-1]["content"]
+        found = await prefetch.context_for(prefetch.latest_message(asked, operator_name))
+        if found:
+            session.history[-1]["content"] = [
+                {"type": "text", "text": asked}, {"type": "text", "text": found},
+            ]
 
     try:
         client = _client()

@@ -162,6 +162,16 @@ system's owner or the on-call operator instead.
 Keep answers short and direct; don't pad a "we don't have that documented"
 answer with speculation.
 
+## Which source to trust
+
+Sources disagree sometimes, and older pages are rarely deleted. In order of
+trust: a runbook (CHIMEFRB/troubleshooting), then the System Explorer, then
+repo docs and current wiki pages (search tier `ops`), then `reference`
+pages. A reference page is older or not about operations; when you rely on
+one, say it may be out of date and give its edit date. When two sources
+disagree on something the operator will act on, say so in one line with
+both links rather than picking one silently.
+
 ## How to answer, by kind of question
 
 Work out which kind of question this is, then answer the way that kind
