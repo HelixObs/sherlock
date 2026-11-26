@@ -8,7 +8,12 @@ unchanged from the earlier stub.
 
 from __future__ import annotations
 
+import re
+
+import httpx
+
 from sherlock import kb
+from sherlock.tools.github import GITHUB_TOKEN, _to_raw_url
 
 DEFINITIONS = [
     {
@@ -41,16 +46,12 @@ DEFINITIONS = [
             "or subsystem?' Clarification is a normal part of "
             "investigating, not a fallback of last resort."
             "\n\n"
-            "Once a call returns a matched entity with docs (or page results "
-            "with a reference URL), that IS the answer to 'where is this "
-            "documented' — cite it and stop. The knowledge base indexes whole "
-            "wiki pages, not individual procedures within them, so retrying "
-            "search_kb with more specific or differently-phrased queries "
-            "hoping to surface exact step-by-step commands from inside an "
-            "already-found page won't turn up anything new — it'll just cost "
-            "more tokens for the same answer. Point the operator at the page "
-            "(and the relevant section heading, if the excerpt names one) "
-            "rather than trying to fetch and reproduce its exact contents."
+            "Results are short excerpts. Once a call returns the page that "
+            "answers the question, don't retry search_kb with other wording "
+            "to get more of it: call read_doc with that result's reference "
+            "to read the whole section when the answer needs what it says "
+            "(the steps of a procedure, an order, a threshold). For 'where "
+            "is this documented', the reference alone is the answer."
             "\n\n"
             "Word choice in `query` matters more than it looks. A query "
             "first tries an exact match (every word must appear together on "
@@ -82,8 +83,60 @@ DEFINITIONS = [
 ]
 
 
+DEFINITIONS.append({
+    "name": "read_doc",
+    "description": (
+        "Read the full text of a document Sherlock already has a link to: a "
+        "knowledge-base entry (pass a reference exactly as search_kb returned "
+        "it; with a #section you get that section, without one the whole "
+        "page) or a runbook or doc on GitHub (a runbook link from "
+        "explore_systems, or a github.com file URL). Use it when the answer "
+        "needs what the document says, such as the steps of a procedure or "
+        "the order to do them in, and quote or summarise it with the link. "
+        "Don't use it to look for things: search_kb finds, read_doc reads."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "reference": {
+                "type": "string",
+                "description": "A reference URL from search_kb, or a GitHub runbook/doc URL.",
+            },
+        },
+        "required": ["reference"],
+    },
+})
+
+
 async def search_kb(query: str, top_k: int = 5) -> dict:
     return await kb.search(query, top_k)
 
 
-HANDLERS = {"search_kb": search_kb}
+def _github_doc_url(url: str) -> str | None:
+    """A GitHub folder link (a runbook) reads as its README.md."""
+    m = re.match(r"https?://github\.com/([^/]+/[^/]+)/tree/([^/]+)/(.+?)/?$", url)
+    if m:
+        url = f"https://github.com/{m.group(1)}/blob/{m.group(2)}/{m.group(3)}/README.md"
+    return _to_raw_url(url)
+
+
+async def read_doc(reference: str) -> dict:
+    result = await kb.read(reference)
+    if "error" not in result:
+        return result
+    raw = _github_doc_url(reference)
+    if raw is None:
+        return result
+    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
+    async with httpx.AsyncClient(timeout=10, headers=headers, follow_redirects=True) as client:
+        r = await client.get(raw)
+    if r.status_code != 200:
+        return {"error": f"Could not read {reference} (HTTP {r.status_code}). Give the operator the link instead."}
+    text = kb.redact(r.text)
+    out = {"reference": reference, "content": text[:kb.READ_MAX_CHARS]}
+    if len(text) > kb.READ_MAX_CHARS:
+        out["truncated"] = True
+    return out
+
+
+HANDLERS = {"search_kb": search_kb, "read_doc": read_doc}

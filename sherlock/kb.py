@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 
@@ -163,7 +164,7 @@ def _fts_search(conn: sqlite3.Connection, query: str, top_k: int) -> list[dict]:
             f"ORDER BY {_RUN_NOTES_ORDER_SQL}, rank LIMIT ?",
             (fts_query, top_k * 5),
         )
-        return [dict(row) for row in cur.fetchall()]
+        return [{**dict(row), "excerpt": redact(row["excerpt"] or "")} for row in cur.fetchall()]
 
     all_matches = _run(_quote_fts_query(query))
     if not all_matches and len(query.split()) > 1:
@@ -275,4 +276,67 @@ async def search(query: str, top_k: int = 5) -> dict:
         matched = "no entity match"
     titles = [r["title"] for r in results]
     log.info("search(%r) -> %s; %d page result(s): %s", query, matched, len(results), titles)
+    return out
+
+
+READ_MAX_CHARS = int(os.environ.get("KB_READ_MAX_CHARS", 8000))
+
+# The KB is sanitized at build time, but some credentials got through (CLI
+# password flags, password= lines). Everything the KB returns passes this
+# as well, so a value never reaches the model even when the build missed it.
+_REDACTED = "[REDACTED]"
+_SECRET_PATTERNS = [
+    (re.compile(r"(-[Uu]\s+\S+\s+-[Pp]\s*)\S+"), r"\1" + _REDACTED),
+    (re.compile(r"(?i)(\bpass(?:word|wd)?\s*[:=]\s*)\S+"), r"\1" + _REDACTED),
+    (re.compile(r"(?i)(\b(?:token|api[_-]?key|secret)\s*[:=]\s*['\"]?)[A-Za-z0-9_\-./+]{8,}"), r"\1" + _REDACTED),
+    (re.compile(r"(://[^/\s:@]+:)[^/\s@]+@"), r"\1" + _REDACTED + "@"),
+]
+
+
+def redact(text: str) -> str:
+    for pattern, repl in _SECRET_PATTERNS:
+        text = pattern.sub(repl, text)
+    return text
+
+
+def _page_of(reference: str) -> str:
+    return reference.split("#", 1)[0]
+
+
+async def read(reference: str) -> dict:
+    """The full text of a knowledge-base entry, by the reference URL a
+    search returned. A reference with a #section gives that section; one
+    without gives every section of the page in order. Capped at
+    READ_MAX_CHARS, with `truncated` set when it was cut."""
+    if not await ensure_fresh():
+        return {"error": "Knowledge base unavailable — no cached copy and could not reach GitHub to fetch one."}
+
+    conn = _connect()
+    try:
+        rows = []
+        if "#" in reference:
+            rows = conn.execute(
+                "SELECT title, reference, content FROM pages WHERE reference = ?", (reference,)
+            ).fetchall()
+        if not rows:
+            page = _page_of(reference)
+            rows = conn.execute(
+                "SELECT title, reference, content FROM pages "
+                "WHERE reference = ? OR reference LIKE ? ESCAPE '\\' ORDER BY rowid",
+                (page, page.replace("%", r"\%").replace("_", r"\_") + "#%"),
+            ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        return {"error": f"No knowledge-base entry with reference {reference!r}. "
+                         "Use a reference exactly as search_kb returned it."}
+
+    text = redact("\n\n".join(f"## {r['title']}\n{r['content']}" for r in rows))
+    out = {"reference": reference, "sections": [r["title"] for r in rows], "content": text[:READ_MAX_CHARS]}
+    if len(text) > READ_MAX_CHARS:
+        out["truncated"] = True
+        out["note"] = ("Cut at the length limit. Read a single section by its "
+                       "reference for the rest.")
+    log.info("read(%r) -> %d section(s), %d chars", reference, len(rows), len(text))
     return out

@@ -28,6 +28,8 @@ sherlock/
     github.py     fetch_github_file, fetch_github_blame, fetch_github_file_history,
                   search_github_callers
     output.py     submit_hypothesis, ask_operator (loop-control tools — no handlers)
+    herodotus.py  search_kb, read_doc — search the operations knowledge base, read a
+                  whole entry or runbook (credentials redacted on the way out)
     explorer.py   explore_systems — a node from the CHIME/FRB System Explorer with its
                   dependencies, what it feeds, placement and runbook;
                   find_shared_causes — ranks what could explain reported symptoms

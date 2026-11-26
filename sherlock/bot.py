@@ -289,6 +289,8 @@ _GFM_RULE_RE = re.compile(r"^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$\n?", re.MULTILI
 # back to the raw name for anything not listed — not meant to be exhaustive.
 _TOOL_LABELS = {
     "search_kb": "knowledge base",
+    "read_doc": "docs",
+    "query_entity": "entity",
     "query_entity_events": "entity events",
     "query_entity_operations": "entity operations",
     "query_entity_ancestors": "provenance",
