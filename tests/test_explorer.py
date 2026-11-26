@@ -184,3 +184,21 @@ def test_unresolved_symptom_asks_for_exact_ids():
 
     assert set(result["unresolved"]) == {"svc", "kubernetes"}
     assert "candidates" not in result
+
+
+def test_one_report_mapped_to_several_nodes_counts_once():
+    flat = explorer.shared_causes(CAUSES_GRAPH, ["svc-a", "svc-b", "svc-c"])
+    grouped = explorer.shared_causes(CAUSES_GRAPH, [["svc-a", "svc-c"], "svc-b"])
+
+    assert flat["candidates"][0]["explains"] == 3
+    assert grouped["symptoms"] == ["svc-a / svc-c", "svc-b"]
+    assert grouped["candidates"][0]["id"] == "db"
+    assert grouped["candidates"][0]["explains"] == 2
+    host = next(c for c in grouped["candidates"] if c["id"] == "host")
+    assert host["explains"] == 2
+
+
+def test_node_and_what_it_runs_on_merge_into_one_report():
+    result = explorer.shared_causes(CAUSES_GRAPH, ["db", "host", "svc-b"])
+
+    assert result["symptoms"] == ["db / host", "svc-b"]
