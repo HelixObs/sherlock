@@ -28,6 +28,8 @@ sherlock/
     github.py     fetch_github_file, fetch_github_blame, fetch_github_file_history,
                   search_github_callers
     output.py     submit_hypothesis, ask_operator (loop-control tools — no handlers)
+    explorer.py   explore_systems — a node from the CHIME/FRB System Explorer with its
+                  dependencies, what it feeds, placement and runbook
     grafana.py    Grafana/Tempo URL helpers (not a tool, imported by herald.py)
 tests/
   test_api.py
@@ -100,6 +102,8 @@ via `record_usage()` for durable cost tracking — Prometheus data resets on res
 | `HERALD_URL` | `http://herald:8080` | Herald HTTP API base URL |
 | `HERALD_DB_URL` | — | Direct TimescaleDB URL for entity_events / similar_errors queries |
 | `SHERLOCK_METRICS_PORT` | `9102` | Prometheus metrics port |
+| `EXPLORER_GRAPH_URL` | `https://chimefrb.github.io/systems-overview/graph.json` | System Explorer graph used by `explore_systems`, re-checked hourly |
+| `EXPLORER_PAGE_URL` | `https://chimefrb.github.io/systems-overview/explorer` | Base for the explorer links Sherlock gives operators |
 | `SHERLOCK_DEV_CORS` | unset | Enables wide-open CORS for `dev/chat.html`. Local machines only — never set this in a deployed environment |
 
 ## Running locally
