@@ -250,7 +250,10 @@ async def run(
     # turn of this investigation, so precomputing avoids rebuilding the same
     # cache_control-tagged structure on every iteration of the loop below.
     cached_system = _cached_system(system)
-    cached_tools = _cached_tools(DEFINITIONS)
+    # submit_hypothesis closes an entity investigation; in a chat there is
+    # none, and calling it replaced the answer with an empty hypothesis.
+    tools = DEFINITIONS if session.entity_id else [d for d in DEFINITIONS if d["name"] != "submit_hypothesis"]
+    cached_tools = _cached_tools(tools)
 
     # Seed the conversation if this is a fresh entity investigation. General
     # chat sessions (no entity_id) are seeded by the /chat handler with the

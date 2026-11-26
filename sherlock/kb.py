@@ -286,7 +286,7 @@ READ_MAX_CHARS = int(os.environ.get("KB_READ_MAX_CHARS", 8000))
 # as well, so a value never reaches the model even when the build missed it.
 _REDACTED = "[REDACTED]"
 _SECRET_PATTERNS = [
-    (re.compile(r"(-[Uu]\s+\S+\s+-[Pp]\s*)\S+"), r"\1" + _REDACTED),
+    (re.compile(r"-[Uu]\s+\S+(\s+-[Pp]\s*)\S+"), "-U " + _REDACTED + r"\1" + _REDACTED),
     (re.compile(r"(?i)(\bpass(?:word|wd)?\s*[:=]\s*)\S+"), r"\1" + _REDACTED),
     (re.compile(r"(?i)(\b(?:token|api[_-]?key|secret)\s*[:=]\s*['\"]?)[A-Za-z0-9_\-./+]{8,}"), r"\1" + _REDACTED),
     (re.compile(r"(://[^/\s:@]+:)[^/\s@]+@"), r"\1" + _REDACTED + "@"),

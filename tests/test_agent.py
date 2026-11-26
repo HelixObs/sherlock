@@ -216,7 +216,8 @@ def test_kb_redacts_credentials_in_commands_and_settings():
         "https://user:hunter2@example.org/x"
     )
     assert "hunter2" not in text and "abcd1234efgh5678" not in text
-    assert text.count("[REDACTED]") == 4
+    assert "ADMIN" not in text
+    assert text.count("[REDACTED]") == 5
 
 
 def test_kb_redaction_leaves_ordinary_text_alone():
@@ -238,3 +239,49 @@ def test_guardrail_placeholders_never_nest_inside_a_code_span():
     text, hit = guardrail.redact_known_identifiers("`sherlock investigate frb-498ec55c5a10`", None)
     assert hit
     assert text == "`sherlock investigate ENTITY_ID`"
+
+
+
+@pytest.mark.asyncio
+async def test_genericize_sends_only_commands_and_keeps_prose(monkeypatch):
+    from sherlock import guardrail
+    import json as _json
+    sent = {}
+
+    class _Block:
+        type = "text"
+        def __init__(self, text): self.text = text
+
+    class _Response:
+        stop_reason = "end_turn"
+        def __init__(self, text): self.content = [_Block(text)]
+
+    class _Messages:
+        async def create(self, **kw):
+            sent["commands"] = _json.loads(kw["messages"][0]["content"])
+            return _Response(_json.dumps(["`ssh HOSTNAME`", "`cctl power on HOSTNAME`"]))
+
+    class _Client:
+        messages = _Messages()
+
+    monkeypatch.setattr(guardrail, "_client", lambda: _Client())
+    text = "Log in to `frb-head` with `ssh frb-head`, then run `cctl power on cfdn7` from `frb-head`."
+    out = await guardrail.genericize(text)
+    assert sent["commands"] == ["`ssh frb-head`", "`cctl power on cfdn7`"]
+    assert out == "Log in to `frb-head` with `ssh HOSTNAME`, then run `cctl power on HOSTNAME` from `frb-head`."
+
+
+@pytest.mark.asyncio
+async def test_genericize_keeps_the_original_when_the_reply_is_malformed(monkeypatch):
+    from sherlock import guardrail
+
+    class _Messages:
+        async def create(self, **kw):
+            class R:
+                stop_reason = "end_turn"
+                content = [type("B", (), {"type": "text", "text": '["only one"]'})()]
+            return R()
+
+    monkeypatch.setattr(guardrail, "_client", lambda: type("C", (), {"messages": _Messages()})())
+    text = "Run `ssh frb-l4` and `df -h /data`."
+    assert await guardrail.genericize(text) == text
