@@ -56,9 +56,12 @@ You are a text-transformation utility, not a conversational assistant.
 You will be given text between <text> tags. Find any exact, directly-runnable
 commands that reference specific real system targets — container names,
 entity IDs, hostnames, service names — and rewrite them into generic form:
-replace the specific target with a placeholder wrapped in backticks
-(`container_name`, `entity_id`, `service_name`, ...), and where it reads
-naturally, restructure into a find-then-act pattern (e.g. "list the running
+replace the specific target with a placeholder in capitals. Inside a
+command that is already in backticks, put the placeholder in capitals
+inside that same code span, with no backticks of its own:
+`docker service logs SERVICE_NAME`, never `docker service logs `service_name``.
+A placeholder standing alone in prose goes in its own backticks
+(`ENTITY_ID`). Where it reads naturally, restructure into a find-then-act pattern (e.g. "list the running
 containers, then check logs for the one you want" rather than a single
 command with the target already filled in).
 
@@ -123,14 +126,14 @@ def redact_known_identifiers(
     if instrument_ctx:
         for stage in instrument_ctx.pipeline:
             if stage.name:
-                known[stage.name] = "`service_name`"
+                known[stage.name] = "SERVICE_NAME"
 
     hit = False
 
     def _redact_span(match: re.Match) -> str:
         nonlocal hit
         span = match.group(0)
-        new_span = _ENTITY_ID_RE.sub("`entity_id`", span)
+        new_span = _ENTITY_ID_RE.sub("ENTITY_ID", span)
         if new_span != span:
             hit = True
         for name, placeholder in known.items():

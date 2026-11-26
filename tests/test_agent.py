@@ -203,3 +203,38 @@ def test_entity_prompt_asks_the_operator_for_logs_when_telemetry_is_off():
     assert "Query Loki" not in text and "query_loki" not in text
     assert "You can't read logs" in text
     assert "{" + "logs_step}" not in text
+
+
+# ── knowledge base reads and redaction ────────────────────────────────────────
+
+def test_kb_redacts_credentials_in_commands_and_settings():
+    from sherlock import kb
+    text = kb.redact(
+        "ipmitool -I lanplus -U ADMIN -P hunter2 -H host power status\n"
+        "password: hunter2\n"
+        "api_key=abcd1234efgh5678\n"
+        "https://user:hunter2@example.org/x"
+    )
+    assert "hunter2" not in text and "abcd1234efgh5678" not in text
+    assert text.count("[REDACTED]") == 4
+
+
+def test_kb_redaction_leaves_ordinary_text_alone():
+    from sherlock import kb
+    text = "Reset your password from the account page. The -P flag sets the port."
+    assert kb.redact(text) == text
+
+
+def test_runbook_folder_link_reads_its_readme():
+    from sherlock.tools.herodotus import _github_doc_url
+    url = "https://github.com/CHIMEFRB/troubleshooting/tree/main/runbooks/replicate"
+    assert _github_doc_url(url) == (
+        "https://raw.githubusercontent.com/CHIMEFRB/troubleshooting/main/runbooks/replicate/README.md"
+    )
+
+
+def test_guardrail_placeholders_never_nest_inside_a_code_span():
+    from sherlock import guardrail
+    text, hit = guardrail.redact_known_identifiers("`sherlock investigate frb-498ec55c5a10`", None)
+    assert hit
+    assert text == "`sherlock investigate ENTITY_ID`"
